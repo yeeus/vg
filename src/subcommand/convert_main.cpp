@@ -15,6 +15,7 @@
 
 #include "bdsg/packed_graph.hpp"
 #include "bdsg/hash_graph.hpp"
+#include <handlegraph/algorithms/chop.hpp>
 
 #include <gbwtgraph/gbz.h>
 #include <gbwtgraph/gfa.h>
@@ -77,6 +78,8 @@ int main_convert(int argc, char** argv) {
     // For GBWTGraph to GFA.
     int num_threads = omp_get_max_threads();
     bool use_translation = true;
+    bool unchop_output = false;
+    int unchop_threads = 1;
 
     if (argc == 2) {
         help_convert(argv);
@@ -89,6 +92,8 @@ int main_convert(int argc, char** argv) {
     constexpr int OPT_NO_TRANSLATION = 1003;
     constexpr int OPT_HAP_LOCUS = 1004;
     constexpr int OPT_NEW_SAMPLE = 1005;
+    constexpr int OPT_UNCHOP = 1006;
+    constexpr int OPT_UNCHOP_THREADS = 1007;
 
     int c;
     optind = 2; // force optind past command positional argument
@@ -118,6 +123,8 @@ int main_convert(int argc, char** argv) {
             {"gam-to-gaf", required_argument, 0, 'G'},
             {"gaf-to-gam", required_argument, 0, 'F'},
             {"threads", required_argument, 0, 't'},
+            {"unchop", no_argument, 0, OPT_UNCHOP},
+            {"unchop-threads", required_argument, 0, OPT_UNCHOP_THREADS},
             {0, 0, 0, 0}
 
         };
@@ -204,12 +211,23 @@ int main_convert(int argc, char** argv) {
             input = input_gaf;
             input_aln = require_exists(logger, optarg);
             break;
+        case OPT_UNCHOP:
+            unchop_output = true;
+            break;
+        case OPT_UNCHOP_THREADS:
+            unchop_threads = set_thread_count(logger, optarg);
+            break;
         case 't':
             num_threads = set_thread_count(logger, optarg);
             break;
         default:
             abort();
         }
+    }
+
+    if ((!unchop_output && unchop_threads != 1) ||
+        (unchop_output && (input != input_gfa || (!output_format.empty() && output_format != "packed")))) {
+        logger.error() << "--unchop requires GFA input and PackedGraph output; --unchop-threads requires --unchop" << endl;
     }
 
     if (!gfa_trans_path.empty() && input != input_gfa) {
@@ -398,6 +416,14 @@ int main_convert(int argc, char** argv) {
         }
     }
 
+    if (unchop_output) {
+        auto* mutable_graph = dynamic_cast<MutablePathDeletableHandleGraph*>(output_graph.get());
+        if (mutable_graph == nullptr) {
+            logger.error() << "--unchop requires a mutable path graph" << endl;
+        }
+        handlealgs::unchop(*mutable_graph, unchop_threads);
+    }
+
     // GFA output.
     if (output_format == "gfa") {
         // Determine if we have a GBZGraph wrapper for a GBZ graph as the HandleGraph.
@@ -510,6 +536,8 @@ void help_convert(char** argv) {
          << "alignment options:" << endl
          << "  -G, --gam-to-gaf FILE      convert GAM FILE to GAF" << endl
          << "  -F, --gaf-to-gam FILE      convert GAF FILE to GAM" << endl
+         << "      --unchop              unchop the imported PackedGraph before saving" << endl
+         << "      --unchop-threads N    parallel read-only unchop analysis [1]" << endl
          << "general options:" << endl
          << "  -t, --threads N            use N threads [numCPUs]" << endl
          << "  -h, --help                 print this help message to stderr and exit" << endl;
