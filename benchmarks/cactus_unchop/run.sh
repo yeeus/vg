@@ -8,7 +8,12 @@ REPO="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 mkdir -p "$(dirname "$OUT")"
 mkdir "$OUT"
 OUT="$(realpath "$OUT")"
-export OMP_NUM_THREADS=1 LC_ALL=C
+export LC_ALL=C
+if [[ "$MODE" == "v3" ]]; then
+    export OMP_NUM_THREADS="$THREADS"
+else
+    export OMP_NUM_THREADS=1
+fi
 case "$MODE" in
     control) VG="$REPO/bin/vg.control" ;;
     v1|v2|v3) VG="$REPO/bin/vg.experiment" ;;
