@@ -21,7 +21,7 @@
 	url = https://github.com/jltsiren/gcsa2.git
 [submodule "sdsl-lite"]
 	path = deps/sdsl-lite
-    url = https://github.com/vgteam/sdsl-lite.git
+    url = https://github.com/yeeus/sdsl-lite.git
 [submodule "deps/sparsehash"]
 	path = deps/sparsehash
 	url = https://github.com/sparsehash/sparsehash.git
@@ -79,10 +79,10 @@
 	url = https://github.com/brendangregg/FlameGraph
 [submodule "deps/libbdsg"]
 	path = deps/libbdsg
-	url = https://github.com/vgteam/libbdsg.git
+	url = https://github.com/yeeus/libbdsg.git
 [submodule "deps/xg"]
 	path = deps/xg
-	url = https://github.com/vgteam/xg.git
+	url = https://github.com/yeeus/xg.git
 [submodule "deps/gbwtgraph"]
 	path = deps/gbwtgraph
 	url = https://github.com/jltsiren/gbwtgraph.git

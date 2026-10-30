@@ -119,7 +119,10 @@ int main(int argc, char** argv) {
             for (const auto& p : before) std::cerr << p.first << " before=" << p.second << " after=" << sequences(graph).at(p.first) << "\n";
             throw std::runtime_error("Path sequence changed");
         }
-        std::cout << seed << "\t" << vg::unchop_benchmark::fingerprint(graph) << "\n";
+        std::string single = vg::unchop_benchmark::fingerprint(graph, 1);
+        if (single != vg::unchop_benchmark::fingerprint(graph, 4))
+            throw std::runtime_error("Parallel fingerprint differs from serial fingerprint");
+        std::cout << seed << "\t" << single << "\n";
     }
     PackedGraph coverage;
     auto a = coverage.create_handle("A", 1);
@@ -131,5 +134,3 @@ int main(int argc, char** argv) {
         throw std::runtime_error("Fingerprint missed a path-uncovered edge");
     std::cerr << "PASS: 80 PackedGraph cases, linear-path sequence invariants, SHA256 vector, uncovered-edge detection\n";
 }
-
-

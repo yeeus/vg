@@ -53,6 +53,8 @@ void help_clip(char** argv) {
          << "  -c, --context N            search up to at most N steps from reference paths" << endl
          << "                             for candidate deletion edges [1]" << endl
          << "general options: " << endl
+         << "      --cactus-clip          run depth 1, -sS, then -D clipping in one graph" << endl
+         << "      --cactus-filter        run -d N, depth 1, then -sS with the first -P" << endl
          << "  -P, --path-prefix STR      do not clip out alleles on paths beginning with STR" << endl
          << "                             (specify such references with -P or -b; may repeat)" << endl
          << "  -m, --min-fragment-len N   don't write novel path fragment if < N bp long" << endl
@@ -77,6 +79,8 @@ int main_clip(int argc, char** argv) {
     bool depth_clipping = false;
     bool stub_clipping = false;
     bool stubbify_reference = false;
+    bool cactus_clip = false;
+    bool cactus_filter = false;
 
     size_t min_nodes = 0;
     size_t min_edges = 0;
@@ -129,6 +133,8 @@ int main_clip(int argc, char** argv) {
             {"output-bed", no_argument, 0, 'B'},
             {"threads", required_argument, 0, 't'},
             {"verbose", no_argument, 0, 'v'},
+            {"cactus-clip", no_argument, 0, 1000},
+            {"cactus-filter", no_argument, 0, 1001},
             {0, 0, 0, 0}
 
         };
@@ -142,6 +148,12 @@ int main_clip(int argc, char** argv) {
 
         switch (c)
         {
+        case 1000:
+            cactus_clip = true;
+            break;
+        case 1001:
+            cactus_filter = true;
+            break;
 
         case '?':
         case 'h':
@@ -259,6 +271,17 @@ int main_clip(int argc, char** argv) {
     // default to same
     if (max_deletion > 0 && context_steps < 0) {
         context_steps = max_deletion;
+    }
+
+    if (cactus_clip && (cactus_filter || !bed_path.empty() || !snarls_path.empty() || snarl_option || out_bed ||
+                        stub_clipping || stubbify_reference || min_depth >= 0 ||
+                        max_deletion < 0 || ref_prefixes.empty())) {
+        logger.error() << "--cactus-clip requires -D and -P; it combines depth 1, -sS, then deletion clipping without BED/snarl options" << endl;
+    }
+    if (cactus_filter && (!bed_path.empty() || !snarls_path.empty() || snarl_option || out_bed ||
+                          stub_clipping || stubbify_reference || min_depth < 0 ||
+                          max_deletion >= 0 || ref_prefixes.empty())) {
+        logger.error() << "--cactus-filter requires -d and -P without BED/snarl/stub/deletion options" << endl;
     }
 
     // load the graph
@@ -403,7 +426,23 @@ int main_clip(int argc, char** argv) {
         }
     }        
     
-    if (min_depth >= 0 && max_deletion < 0) {
+    if (cactus_clip) {
+        // Exact Cactus clip-phase order and stage-specific fragment/depth values:
+        // clip -d 1 -P REF | clip -sS -P REF | clip -D D -P REF -c C -m M
+        clip_low_depth_nodes_and_edges(graph.get(), 1, ref_prefixes, 0, verbose);
+        stubbify_ref_paths(graph.get(), ref_prefixes, 0, verbose);
+        clip_stubs(graph.get(), ref_prefixes, 0, verbose);
+        clip_deletion_edges(graph.get(), max_deletion, context_steps, -1,
+                            ref_prefixes, min_fragment_len, verbose);
+    } else if (cactus_filter) {
+        // The filter phase protects all references in the depth passes, but
+        // only the first reference in its final stubbify/stub pass.
+        clip_low_depth_nodes_and_edges(graph.get(), min_depth, ref_prefixes, min_fragment_len, verbose);
+        clip_low_depth_nodes_and_edges(graph.get(), 1, ref_prefixes, 0, verbose);
+        std::vector<std::string> primary_reference{ref_prefixes.front()};
+        stubbify_ref_paths(graph.get(), primary_reference, 0, verbose);
+        clip_stubs(graph.get(), primary_reference, 0, verbose);
+    } else if (min_depth >= 0 && max_deletion < 0) {
         // run the depth clipping       
         if (bed_regions.empty()) {            
             // do the whole graph

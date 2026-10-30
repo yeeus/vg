@@ -12,6 +12,8 @@
 #include <sstream>
 #include <stdexcept>
 #include <vector>
+#include <atomic>
+#include <future>
 
 namespace vg { namespace unchop_benchmark {
 
@@ -65,8 +67,9 @@ inline uint64_t traversal(const handlegraph::PathHandleGraph& graph,
 // Strict identity: node IDs/sequence, both orientations of all adjacency lists,
 // and complete path metadata and ordered steps. Includes path-uncovered topology.
 // Storage layout, allocated capacity and serialization order are excluded.
-inline std::string fingerprint(const handlegraph::PathHandleGraph& graph) {
+inline std::string fingerprint(const handlegraph::PathHandleGraph& graph, size_t threads = 1) {
     using namespace handlegraph;
+    if (!threads) throw std::invalid_argument("fingerprint requires at least one thread");
     std::vector<handle_t> nodes;
     nodes.reserve(graph.get_node_count());
     graph.for_each_handle([&](const handle_t& h) { nodes.push_back(graph.forward(h)); });
@@ -94,28 +97,55 @@ inline std::string fingerprint(const handlegraph::PathHandleGraph& graph) {
     std::vector<std::pair<std::string, path_handle_t>> paths;
     graph.for_each_path_handle([&](path_handle_t p) { paths.emplace_back(graph.get_path_name(p), p); });
     std::sort(paths.begin(), paths.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    // Hash paths independently, then combine the fixed-size digests in sorted
+    // name order. Memory is one loaded graph plus O(nodes + paths + threads),
+    // never a buffer containing every path step or a second copy of the graph.
+    std::vector<std::pair<std::string, uint64_t>> path_hashes(paths.size());
+    auto hash_path = [&](size_t index) {
+        const auto& item = paths[index];
+        path_handle_t p = item.second;
+        Digest digest;
+        digest.text(item.first);
+        digest.number(graph.get_is_circular(p));
+        digest.number(static_cast<uint64_t>(graph.get_sense(p)));
+        digest.text(graph.get_sample_name(p));
+        digest.number(graph.get_haplotype(p));
+        digest.text(graph.get_locus_name(p));
+        digest.number(graph.get_phase_block(p));
+        auto subrange = graph.get_subrange(p);
+        digest.number(subrange.first);
+        digest.number(subrange.second);
+        digest.number(graph.get_step_count(p));
+        uint64_t steps = 0;
+        graph.for_each_step_in_path(p, [&](step_handle_t step) {
+            digest.number(traversal(graph, graph.get_handle_of_step(step)));
+            ++steps;
+        });
+        path_hashes[index] = {digest.finish(), steps};
+    };
+    threads = std::min(threads, std::max<size_t>(1, paths.size()));
+    if (threads == 1) {
+        for (size_t i = 0; i < paths.size(); ++i) hash_path(i);
+    } else {
+        std::atomic<size_t> next_path(0);
+        auto worker = [&]() {
+            for (size_t i = next_path.fetch_add(1); i < paths.size(); i = next_path.fetch_add(1))
+                hash_path(i);
+        };
+        std::vector<std::future<void>> workers;
+        for (size_t i = 1; i < threads; ++i)
+            workers.emplace_back(std::async(std::launch::async, worker));
+        worker();
+        for (auto& thread : workers) thread.get();
+    }
     path_digest.number(paths.size());
     uint64_t path_steps = 0;
-    for (const auto& item : paths) {
-        path_handle_t p = item.second;
+    for (const auto& item : path_hashes) {
         path_digest.text(item.first);
-        path_digest.number(graph.get_is_circular(p));
-        path_digest.number(static_cast<uint64_t>(graph.get_sense(p)));
-        path_digest.text(graph.get_sample_name(p));
-        path_digest.number(graph.get_haplotype(p));
-        path_digest.text(graph.get_locus_name(p));
-        path_digest.number(graph.get_phase_block(p));
-        auto subrange = graph.get_subrange(p);
-        path_digest.number(subrange.first);
-        path_digest.number(subrange.second);
-        path_digest.number(graph.get_step_count(p));
-        graph.for_each_step_in_path(p, [&](step_handle_t step) {
-            path_digest.number(traversal(graph, graph.get_handle_of_step(step)));
-            ++path_steps;
-        });
+        path_steps += item.second;
     }
     std::ostringstream out;
-    out << "{\"format\":\"vg-strict-graph-sha256-v1\",\"nodes\":" << nodes.size()
+    out << "{\"format\":\"vg-strict-graph-sha256-v2\",\"nodes\":" << nodes.size()
         << ",\"adjacency_entries\":" << adjacency_entries << ",\"paths\":" << paths.size()
         << ",\"path_steps\":" << path_steps
         << ",\"nodes_sha256\":\"" << node_digest.finish()

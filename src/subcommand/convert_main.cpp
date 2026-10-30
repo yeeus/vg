@@ -22,6 +22,8 @@
 
 #include <unistd.h>
 #include <getopt.h>
+#include <chrono>
+#include <cstdlib>
 
 using namespace vg;
 using namespace vg::subcommand;
@@ -59,6 +61,15 @@ void add_and_adjust_paths(const PathHandleGraph* input, MutablePathHandleGraph* 
 
 int main_convert(int argc, char** argv) {
     Logger logger("vg convert");
+    auto phase_start = std::chrono::steady_clock::now();
+    auto report_phase = [&](const char* phase) {
+        auto now = std::chrono::steady_clock::now();
+        if (std::getenv("VG_BENCH_PHASES")) {
+            std::cerr << "[cactus-bench] phase=" << phase << " wall_s="
+                      << std::chrono::duration<double>(now - phase_start).count() << '\n';
+        }
+        phase_start = now;
+    };
 
     string output_format;
     input_type input = INPUT_DEFAULT;
@@ -416,12 +427,14 @@ int main_convert(int argc, char** argv) {
         }
     }
 
+    report_phase("import");
     if (unchop_output) {
         auto* mutable_graph = dynamic_cast<MutablePathDeletableHandleGraph*>(output_graph.get());
         if (mutable_graph == nullptr) {
             logger.error() << "--unchop requires a mutable path graph" << endl;
         }
         handlealgs::unchop(*mutable_graph, unchop_threads);
+        report_phase("unchop");
     }
 
     // GFA output.
@@ -486,6 +499,7 @@ int main_convert(int argc, char** argv) {
     // Serialize the output graph.
     else {
         vg::io::save_handle_graph(output_graph.get(), cout);
+        report_phase("serialize");
     }
 
     return 0;
