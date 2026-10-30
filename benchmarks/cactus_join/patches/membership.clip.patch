@@ -1,0 +1,127 @@
+diff --git a/bdsg/include/bdsg/internal/base_packed_graph.hpp b/bdsg/include/bdsg/internal/base_packed_graph.hpp
+index 5b11d4d..0b64610 100644
+--- a/bdsg/include/bdsg/internal/base_packed_graph.hpp
++++ b/bdsg/include/bdsg/internal/base_packed_graph.hpp
+@@ -9,6 +9,8 @@
+ #define BDSG_BASE_PACKED_GRAPH_HPP_INCLUDED
+ 
+ #include <utility>
++#include <cstdlib>
++#include <sdsl/bit_vectors.hpp>
+ 
+ #include <handlegraph/util.hpp>
+ 
+@@ -2281,6 +2283,64 @@ void BasePackedGraph<Backend>::defragment(bool force) {
+         
+         uint64_t num_membership_records = path_membership_next_iv.size() / MEMBERSHIP_NEXT_RECORD_SIZE - deleted_membership_records;
+         
++        if (std::getenv("VG_BENCH_COMPACT_MEMBERSHIP")) {
++            // Rank preserves linked-list order while moving records only LEFT:
++            // no unread record can be overwritten. Scratch is ~1 bit/old record,
++            // rather than three complete replacement arrays.
++            const size_t old_count = path_membership_next_iv.size() / MEMBERSHIP_NEXT_RECORD_SIZE;
++            sdsl::bit_vector live(old_count + 1, 0);
++            for (size_t i = 0; i < nid_to_graph_iv.size(); ++i) {
++                const auto raw = nid_to_graph_iv.get(i);
++                if (!raw) continue;
++                const auto head = graph_index_to_node_member_index((raw - 1) * GRAPH_RECORD_SIZE);
++                uint64_t member = path_membership_node_iv.get(head);
++                while (member) {
++                    live[member] = 1;
++                    member = get_next_membership(member);
++                }
++            }
++            sdsl::rank_support_v5<1> rank(&live);
++            auto translate = [&](uint64_t member) -> uint64_t {
++                return member ? rank(member + 1) : 0;
++            };
++            for (size_t i = 0; i < nid_to_graph_iv.size(); ++i) {
++                const auto raw = nid_to_graph_iv.get(i);
++                if (!raw) continue;
++                const auto head = graph_index_to_node_member_index((raw - 1) * GRAPH_RECORD_SIZE);
++                path_membership_node_iv.set(head, translate(path_membership_node_iv.get(head)));
++            }
++            size_t dest = 0;
++            for (size_t member = 1; member <= old_count; ++member) {
++                if (!live[member]) continue;
++                const auto path = get_membership_path(member);
++                const auto step = get_membership_step(member);
++                const auto next = translate(get_next_membership(member));
++                path_membership_id_iv.set(dest, path);
++                path_membership_offset_iv.set(dest, step);
++                path_membership_next_iv.set(dest, next);
++                ++dest;
++                // Repack each completed destination page immediately. Do not
++                // accumulate old anchors/widened pages across the whole graph.
++                if (dest % path_membership_id_iv.page_width() == 0)
++                    path_membership_id_iv.repack_page(dest / path_membership_id_iv.page_width() - 1);
++                if (dest % path_membership_offset_iv.page_width() == 0)
++                    path_membership_offset_iv.repack_page(dest / path_membership_offset_iv.page_width() - 1);
++                if (dest % path_membership_next_iv.page_width() == 0)
++                    path_membership_next_iv.repack_page(dest / path_membership_next_iv.page_width() - 1);
++            }
++            assert(dest == num_membership_records);
++            path_membership_id_iv.resize(dest);
++            path_membership_offset_iv.resize(dest);
++            path_membership_next_iv.resize(dest);
++            // Moving values can leave stale anchors/widths. Repack a page at
++            // a time, never a second complete membership array.
++            if (dest % path_membership_id_iv.page_width())
++                path_membership_id_iv.repack_page(dest / path_membership_id_iv.page_width());
++            if (dest % path_membership_offset_iv.page_width())
++                path_membership_offset_iv.repack_page(dest / path_membership_offset_iv.page_width());
++            if (dest % path_membership_next_iv.page_width())
++                path_membership_next_iv.repack_page(dest / path_membership_next_iv.page_width());
++        } else {
+         decltype(path_membership_id_iv) new_path_membership_id_iv;
+         decltype(path_membership_offset_iv) new_path_membership_offset_iv;
+         decltype(path_membership_next_iv) new_path_membership_next_iv;
+@@ -2326,6 +2386,8 @@ void BasePackedGraph<Backend>::defragment(bool force) {
+         path_membership_offset_iv = std::move(new_path_membership_offset_iv);
+         path_membership_next_iv = std::move(new_path_membership_next_iv);
+         
++        }
++
+         deleted_membership_records = 0;
+     }
+ }
+diff --git a/bdsg/include/bdsg/internal/packed_structs.hpp b/bdsg/include/bdsg/internal/packed_structs.hpp
+index e1732b2..f0b3e9b 100644
+--- a/bdsg/include/bdsg/internal/packed_structs.hpp
++++ b/bdsg/include/bdsg/internal/packed_structs.hpp
+@@ -252,6 +252,10 @@ public:
+     
+     /// Reallocate smaller after having been resized down.
+     inline void shrink_to_fit();
++
++    /// Re-anchor and repack each page separately; scratch is one page.
++    inline void repack_page(size_t page);
++
+     
+     /// Returns the number of values
+     inline size_t size() const;
+@@ -1186,6 +1190,24 @@ inline void PagedVector<page_size, Backend>::shrink_to_fit() {
+     pages.shrink_to_fit();
+ }
+ 
++template<size_t page_size, typename Backend>
++inline void PagedVector<page_size, Backend>::repack_page(size_t page) {
++    assert(page < pages.size());
++    const size_t count = std::min<size_t>(page_size, filled - page * page_size);
++    // Read before replacing the anchor or backing page. Fixed-size scratch.
++    uint64_t values[page_size];
++    uint64_t anchor = 0;
++    for (size_t i = 0; i < count; ++i) {
++        values[i] = get(page * page_size + i);
++        if (!anchor) anchor = values[i];
++    }
++    Page replacement;
++    replacement.resize(page_size);
++    for (size_t i = 0; i < count; ++i) replacement.set(i, to_diff(values[i], anchor));
++    anchors.set(page, anchor);
++    pages[page] = std::move(replacement);
++}
++
+ template<size_t page_size, typename Backend>
+ inline size_t PagedVector<page_size, Backend>::size() const {
+     return filled;

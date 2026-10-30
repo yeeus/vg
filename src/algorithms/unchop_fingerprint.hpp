@@ -79,20 +79,52 @@ inline std::string fingerprint(const handlegraph::PathHandleGraph& graph, size_t
     Digest node_digest, edge_digest, path_digest;
     node_digest.number(nodes.size());
     edge_digest.number(nodes.size());
-    uint64_t adjacency_entries = 0;
-    for (handle_t node : nodes) {
-        node_digest.number(graph.get_id(node));
-        node_digest.text(graph.get_sequence(node));
-        for (size_t reverse = 0; reverse < 2; ++reverse) {
-            handle_t from = reverse ? graph.flip(node) : node;
-            std::vector<uint64_t> neighbors;
-            graph.follow_edges(from, false, [&](handle_t to) { neighbors.push_back(traversal(graph, to)); });
-            std::sort(neighbors.begin(), neighbors.end());
-            edge_digest.number(traversal(graph, from));
-            edge_digest.number(neighbors.size());
-            for (uint64_t to : neighbors) edge_digest.number(to);
-            adjacency_entries += neighbors.size();
+    // Fixed blocks make the digest independent of scheduling and thread count.
+    // Only one graph is loaded. Scratch is O(nodes / 4096), not all node strings.
+    constexpr size_t block_size = 4096;
+    struct Block { std::string nodes, edges; uint64_t entries = 0; };
+    std::vector<Block> blocks((nodes.size() + block_size - 1) / block_size);
+    auto hash_block = [&](size_t index) {
+        Digest nd, ed;
+        const size_t end = std::min(nodes.size(), (index + 1) * block_size);
+        nd.number(end - index * block_size);
+        ed.number(end - index * block_size);
+        for (size_t i = index * block_size; i < end; ++i) {
+            handle_t node = nodes[i];
+            nd.number(graph.get_id(node));
+            nd.text(graph.get_sequence(node));
+            for (size_t reverse = 0; reverse < 2; ++reverse) {
+                handle_t from = reverse ? graph.flip(node) : node;
+                std::vector<uint64_t> neighbors;
+                graph.follow_edges(from, false, [&](handle_t to) { neighbors.push_back(traversal(graph, to)); });
+                std::sort(neighbors.begin(), neighbors.end());
+                ed.number(traversal(graph, from));
+                ed.number(neighbors.size());
+                for (uint64_t to : neighbors) ed.number(to);
+                blocks[index].entries += neighbors.size();
+            }
         }
+        blocks[index].nodes = nd.finish();
+        blocks[index].edges = ed.finish();
+    };
+    const size_t node_workers = std::min(threads, std::max<size_t>(1, blocks.size()));
+    if (node_workers == 1) {
+        for (size_t i = 0; i < blocks.size(); ++i) hash_block(i);
+    } else {
+        std::atomic<size_t> next(0);
+        auto worker = [&]() {
+            for (size_t i = next.fetch_add(1); i < blocks.size(); i = next.fetch_add(1)) hash_block(i);
+        };
+        std::vector<std::future<void>> workers;
+        for (size_t i = 1; i < node_workers; ++i) workers.emplace_back(std::async(std::launch::async, worker));
+        worker();
+        for (auto& thread : workers) thread.get();
+    }
+    uint64_t adjacency_entries = 0;
+    for (const auto& block : blocks) {
+        node_digest.text(block.nodes);
+        edge_digest.text(block.edges);
+        adjacency_entries += block.entries;
     }
     std::vector<std::pair<std::string, path_handle_t>> paths;
     graph.for_each_path_handle([&](path_handle_t p) { paths.emplace_back(graph.get_path_name(p), p); });
@@ -145,7 +177,7 @@ inline std::string fingerprint(const handlegraph::PathHandleGraph& graph, size_t
         path_steps += item.second;
     }
     std::ostringstream out;
-    out << "{\"format\":\"vg-strict-graph-sha256-v2\",\"nodes\":" << nodes.size()
+    out << "{\"format\":\"vg-strict-graph-sha256-v3\",\"nodes\":" << nodes.size()
         << ",\"adjacency_entries\":" << adjacency_entries << ",\"paths\":" << paths.size()
         << ",\"path_steps\":" << path_steps
         << ",\"nodes_sha256\":\"" << node_digest.finish()

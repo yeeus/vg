@@ -7,6 +7,9 @@
 #include <vg/io/vpkg.hpp>
 #include <vg/io/alignment_emitter.hpp>
 #include "../clip.hpp"
+#include "../traversal_clusters.hpp"
+#include <handlegraph/algorithms/chop.hpp>
+#include <handlegraph/algorithms/topological_sort.hpp>
 #include <bdsg/overlays/overlay_helper.hpp>
 
 #include <unistd.h>
@@ -55,6 +58,7 @@ void help_clip(char** argv) {
          << "general options: " << endl
          << "      --cactus-clip          run depth 1, -sS, then -D clipping in one graph" << endl
          << "      --cactus-filter        run -d N, depth 1, then -sS with the first -P" << endl
+         << "      --cactus-full          chop 1024, normalize first -P, depth 1, assign sorted IDs" << endl
          << "  -P, --path-prefix STR      do not clip out alleles on paths beginning with STR" << endl
          << "                             (specify such references with -P or -b; may repeat)" << endl
          << "  -m, --min-fragment-len N   don't write novel path fragment if < N bp long" << endl
@@ -81,6 +85,7 @@ int main_clip(int argc, char** argv) {
     bool stubbify_reference = false;
     bool cactus_clip = false;
     bool cactus_filter = false;
+    bool cactus_full = false;
 
     size_t min_nodes = 0;
     size_t min_edges = 0;
@@ -135,6 +140,7 @@ int main_clip(int argc, char** argv) {
             {"verbose", no_argument, 0, 'v'},
             {"cactus-clip", no_argument, 0, 1000},
             {"cactus-filter", no_argument, 0, 1001},
+            {"cactus-full", no_argument, 0, 1002},
             {0, 0, 0, 0}
 
         };
@@ -153,6 +159,9 @@ int main_clip(int argc, char** argv) {
             break;
         case 1001:
             cactus_filter = true;
+            break;
+        case 1002:
+            cactus_full = true;
             break;
 
         case '?':
@@ -273,6 +282,11 @@ int main_clip(int argc, char** argv) {
         context_steps = max_deletion;
     }
 
+    if (cactus_full && (cactus_clip || cactus_filter || !bed_path.empty() || !snarls_path.empty() ||
+                        snarl_option || out_bed || stub_clipping || stubbify_reference || min_depth >= 0 ||
+                        max_deletion >= 0 || ref_prefixes.size() != 1)) {
+        logger.error() << "--cactus-full requires exactly one -P and no other clipping options" << endl;
+    }
     if (cactus_clip && (cactus_filter || !bed_path.empty() || !snarls_path.empty() || snarl_option || out_bed ||
                         stub_clipping || stubbify_reference || min_depth >= 0 ||
                         max_deletion < 0 || ref_prefixes.empty())) {
@@ -296,7 +310,7 @@ int main_clip(int argc, char** argv) {
     vector<Region> bed_regions;
 
     // need the path positions unless we're doing depth, deletion or stub clipping without regions
-    bool need_pp = !(bed_path.empty() && (min_depth >= 0 || max_deletion >= 0 || stub_clipping));
+    bool need_pp = !cactus_full && !(bed_path.empty() && (min_depth >= 0 || max_deletion >= 0 || stub_clipping));
 
     // need snarls if input regions are provided, or doing snarl based clipping
     bool need_snarls = snarl_option || !bed_path.empty();
@@ -426,7 +440,28 @@ int main_clip(int argc, char** argv) {
         }
     }        
     
-    if (cactus_clip) {
+    if (cactus_full) {
+        // Exactly: mod -X 1024 | paths -n -Q REF -t 1 | clip -d 1 -P REF | ids -s
+        auto* editable = dynamic_cast<MutablePathDeletableHandleGraph*>(graph.get());
+        if (!editable) throw std::runtime_error("--cactus-full needs a deletable path graph");
+        handlealgs::chop(*editable, 1024);
+        unordered_set<PathSense> senses{PathSense::REFERENCE, PathSense::GENERIC, PathSense::HAPLOTYPE};
+        unordered_set<path_handle_t> selected;
+        graph->for_each_path_matching(&senses, nullptr, nullptr, [&](const path_handle_t& p) {
+            if (graph->get_path_name(p).compare(0, ref_prefixes.front().size(), ref_prefixes.front()) == 0)
+                selected.insert(p);
+        });
+        if (selected.empty()) throw std::runtime_error("--cactus-full has no reference paths");
+        // Cactus's job.cores is one here. Preserve its normalization ordering.
+        omp_set_num_threads(1);
+        merge_equivalent_traversals_in_graph(graph.get(), selected, true);
+        clip_low_depth_nodes_and_edges(graph.get(), 1, ref_prefixes, 0, verbose);
+        auto order = handlealgs::topological_order(graph.get());
+        hash_map<nid_t, nid_t> new_ids;
+        new_ids.reserve(order.size());
+        for (nid_t i = 1; i <= order.size(); ++i) new_ids[graph->get_id(order[i-1])] = i;
+        graph->reassign_node_ids([&](const nid_t& id) { return new_ids.at(id); });
+    } else if (cactus_clip) {
         // Exact Cactus clip-phase order and stage-specific fragment/depth values:
         // clip -d 1 -P REF | clip -sS -P REF | clip -D D -P REF -c C -m M
         clip_low_depth_nodes_and_edges(graph.get(), 1, ref_prefixes, 0, verbose);

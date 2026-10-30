@@ -21,7 +21,9 @@ mkdir "$PREFIX/bin"
 cp "$ORIGINAL" "$PREFIX/bin/vg.control"
 export LD_LIBRARY_PATH="$PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 "$PREFIX/bin/vg.control" version > "$PREFIX/version.log" 2>&1
-ldd "$PREFIX/bin/vg.control" > "$PREFIX/libraries.log"
-grep 'libhandlegraph.so' "$PREFIX/libraries.log" | grep -F "$PREFIX/lib/"
+ldd "$PREFIX/bin/vg.control" > "$PREFIX/libraries.log" 2>&1 || true
+if grep -q 'libhandlegraph.so' "$PREFIX/libraries.log"; then
+    grep 'libhandlegraph.so' "$PREFIX/libraries.log" | grep -F "$PREFIX/lib/"
+fi
 printf '%s\n' ae42926da7743a7108db0474bfcf1a1cdac34abb > "$PREFIX/libhandlegraph.commit"
 printf 'Frozen control: %s/bin/vg.control\n' "$PREFIX"

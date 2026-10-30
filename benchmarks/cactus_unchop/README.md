@@ -1,5 +1,7 @@
 # Cactus 7f34bb7：低内存对照测试
 
+**下列为早期多版本实验记录。当前只运行原版和一个集成候选，见 [cactus_join](../cactus_join/README.md)。不要继续下面的 V1–V7 参数组合。**
+
 原版 vg：`f2ed0bbd4f7d1e7f8c8f4df4a84018f388194d51`。新代码在 `cactus-7f34bb7-lowmem` 分支；依赖由 submodule commit 固定，一次编译支持下列独立配置。
 
 **旧 vg.control 与实验版共用过 libhandlegraph.so，旧 control/V1 不能用于判断原版收益。先隔离原版依赖，再开始新一轮；保留正在运行的旧测试。**

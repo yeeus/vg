@@ -71,6 +71,7 @@ int main_convert(int argc, char** argv) {
         phase_start = now;
     };
 
+    string require_sample;
     string output_format;
     input_type input = INPUT_DEFAULT;
     int64_t input_rgfa_rank = 0;
@@ -105,6 +106,7 @@ int main_convert(int argc, char** argv) {
     constexpr int OPT_NEW_SAMPLE = 1005;
     constexpr int OPT_UNCHOP = 1006;
     constexpr int OPT_UNCHOP_THREADS = 1007;
+    constexpr int OPT_REQUIRE_SAMPLE = 1008;
 
     int c;
     optind = 2; // force optind past command positional argument
@@ -136,6 +138,7 @@ int main_convert(int argc, char** argv) {
             {"threads", required_argument, 0, 't'},
             {"unchop", no_argument, 0, OPT_UNCHOP},
             {"unchop-threads", required_argument, 0, OPT_UNCHOP_THREADS},
+            {"require-sample", required_argument, 0, OPT_REQUIRE_SAMPLE},
             {0, 0, 0, 0}
 
         };
@@ -224,6 +227,9 @@ int main_convert(int argc, char** argv) {
             break;
         case OPT_UNCHOP:
             unchop_output = true;
+            break;
+        case OPT_REQUIRE_SAMPLE:
+            require_sample = optarg;
             break;
         case OPT_UNCHOP_THREADS:
             unchop_threads = set_thread_count(logger, optarg);
@@ -437,6 +443,25 @@ int main_convert(int argc, char** argv) {
         report_phase("unchop");
     }
 
+    if (!require_sample.empty()) {
+        if (input != input_handlegraph || output_format != "gfa") {
+            throw std::runtime_error("--require-sample requires handle graph input and -f");
+        }
+        const auto* paths = dynamic_cast<const PathHandleGraph*>(input_graph.get());
+        if (!paths) throw std::runtime_error("input has no paths");
+        std::set<std::string> samples;
+        paths->for_each_path_handle([&](const path_handle_t& p) {
+            std::string name = paths->get_path_name(p);
+            samples.insert(name.substr(0, name.find('#')));
+        });
+        if (!samples.count(require_sample)) {
+            std::ostringstream message;
+            message << "reference sample \"" << require_sample << "\" has no path; samples:";
+            for (const auto& sample : samples) message << " " << sample;
+            throw std::runtime_error(message.str());
+        }
+    }
+
     // GFA output.
     if (output_format == "gfa") {
         // Determine if we have a GBZGraph wrapper for a GBZ graph as the HandleGraph.
@@ -551,6 +576,7 @@ void help_convert(char** argv) {
          << "  -G, --gam-to-gaf FILE      convert GAM FILE to GAF" << endl
          << "  -F, --gaf-to-gam FILE      convert GAF FILE to GAM" << endl
          << "      --unchop              unchop the imported PackedGraph before saving" << endl
+         << "      --require-sample STR  require a sample during GFA export (name before #)" << endl
          << "      --unchop-threads N    parallel read-only unchop analysis [1]" << endl
          << "general options:" << endl
          << "  -t, --threads N            use N threads [numCPUs]" << endl
