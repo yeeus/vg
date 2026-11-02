@@ -46,15 +46,25 @@ cp "$PREFIX/source/gfaffix/target/release/gfaffix" "$PREFIX/candidate/bin/"
 # Build the pinned Cactus clip-vg source directly, with its OWN pinned backend.
 git clone --no-checkout https://github.com/ComparativeGenomicsToolkit/hal2vg.git "$PREFIX/source/hal2vg"
 git -C "$PREFIX/source/hal2vg" checkout --detach 80112aa3de68be015093bb88c784f7911a74b09d
+git -C "$PREFIX/source/hal2vg" submodule update --init deps/jemalloc
+JEM="$PREFIX/source/hal2vg/deps/jemalloc"
+(
+    cd "$JEM"
+    export CFLAGS='-O3 -g' CXXFLAGS='-O3 -g' LDFLAGS='' LIBS=''
+    ./autogen.sh
+    ./configure --disable-libdl
+    make -j "$JOBS" build_lib_static
+) > "$PREFIX/build.jemalloc.log" 2>&1
 git -C "$PREFIX/source/hal2vg" submodule update --init --recursive deps/libbdsg-easy
 EASY="$PREFIX/source/hal2vg/deps/libbdsg-easy"
 [[ "$(git -C "$EASY/deps/libbdsg" rev-parse HEAD)" == a2e873b80b10b38b90f1f82bee3044116b6276fc ]]
 make -C "$EASY" -j "$JOBS" > "$PREFIX/build.clip.control.log" 2>&1
 compile_clip() {
-    "${CXX:-g++}" -O3 -DNDEBUG -std=c++17 -fopenmp -pthread \
+    "${CXX:-g++}" -O3 -g -UNDEBUG -std=c++20 -DHAVE_JEMALLOC -fopenmp -pthread \
         -I "$EASY/include" "$PREFIX/source/hal2vg/clip-vg.cpp" \
         "$EASY/lib/libbdsg.a" "$EASY/lib/libhandlegraph.a" "$EASY/lib/libsdsl.a" \
-        "$EASY/lib/libdivsufsort.a" "$EASY/lib/libdivsufsort64.a" -ljansson -o "$1"
+        "$EASY/lib/libdivsufsort.a" "$EASY/lib/libdivsufsort64.a" \
+        "$JEM/lib/libjemalloc.a" -ljansson -ldl -o "$1"
 }
 compile_clip "$PREFIX/control/bin/clip-vg" >> "$PREFIX/build.clip.control.log" 2>&1
 git -C "$EASY/deps/libbdsg" apply --check "$HERE/patches/membership.clip.patch"
@@ -68,10 +78,12 @@ cp "$EASY/deps/libbdsg/lib/libbdsg.a" "$EASY/lib/libbdsg.a"
 cp -a "$EASY/deps/libbdsg/bdsg/include/." "$EASY/include/"
 compile_clip "$PREFIX/candidate/bin/clip-vg" >> "$PREFIX/build.clip.candidate.log" 2>&1
 
-python3 "$HERE/prepare.py" "$PREFIX/candidate/override"
+python3 "$HERE/prepare.py" "$PREFIX/control/override" --mode control
+python3 "$HERE/prepare.py" "$PREFIX/candidate/override" --mode candidate
 git -C "$REPO" submodule status --recursive > "$PREFIX/dependencies.log"
 git -C "$PREFIX/source/hal2vg" submodule status --recursive >> "$PREFIX/dependencies.log"
 python3 "$REPO/benchmarks/cactus_unchop/test_gfaffix.py" \
     "$PREFIX/control/bin/gfaffix" "$PREFIX/candidate/bin/gfaffix" "$PREFIX/source/gfaffix/examples"
-python3 "$HERE/test_join.py" "$PREFIX"
+python3 "$HERE/test_checkpoint.py"
+python3 "$HERE/test_join.py" "$PREFIX" --sequential
 printf 'Build and small differential checks passed: %s\n' "$PREFIX"

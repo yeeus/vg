@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+from checkpoint import JoinStages
 import shlex
 import subprocess
 import tempfile
@@ -11,6 +12,7 @@ import sys
 
 FLAGS=dict(VG_BENCH_NUMERIC_IDS='1',VG_BENCH_FAST_SERIALIZE='1',VG_BENCH_PATH_THREADS='4',
            VG_BENCH_XG_MODE='compact',VG_BENCH_COMPACT_MEMBERSHIP='1')
+SEQUENTIAL=False
 
 def environment(prefix,mode):
     env={k:v for k,v in os.environ.items() if not k.startswith('VG_BENCH_')}
@@ -20,19 +22,34 @@ def environment(prefix,mode):
     return env
 
 def pipeline(commands,output,env):
+    if SEQUENTIAL and len(commands)>1:
+        def call(parameters, outfile, returnStdErr):
+            with open(outfile,'wb') as stream:
+                result=subprocess.run(parameters,env=env,stdout=stream,stderr=subprocess.PIPE)
+            result.check_returncode()
+            return result.stderr.decode(errors='replace')
+        stages=JoinStages(call,output.parent,dict(input_id=str(output)))
+        stages.pipeline('commands',[[str(x) for x in c] for c in commands],str(output))
+        return
     command='set -eo pipefail; '+' | '.join(shlex.join([str(x) for x in c]) for c in commands)
     with output.open('wb') as stream:
         result=subprocess.run(['bash','-c',command],env=env,stdout=stream,stderr=subprocess.PIPE)
     if result.returncode: raise RuntimeError(command+'\n'+result.stderr.decode(errors='replace'))
 
 def main():
+    global SEQUENTIAL
     p=argparse.ArgumentParser()
     p.add_argument('prefix',type=Path)
+    p.add_argument('--sequential',action='store_true')
     args=p.parse_args()
     prefix=args.prefix.resolve()
     verify=prefix/'candidate/bin/vg'
     with tempfile.TemporaryDirectory(prefix='cactus-join-small-') as temporary:
         root=Path(temporary)
+        SEQUENTIAL=args.sequential
+        if SEQUENTIAL:
+            os.environ['CACTUS_JOIN_STAGE_CACHE']=str(root/'stage_cache')
+            os.environ['CACTUS_JOIN_STAGE_TAG']='small-graph-test'
         fixture='H\tVN:Z:1.1\nS\t1\t'+('A'*1500)+'\nS\t2\tACGT\nS\t3\tACGA\nS\t4\t'+('C'*21000)+'\nS\t5\tT\n'
         fixture+='L\t1\t+\t2\t+\t0M\nL\t1\t+\t3\t+\t0M\nL\t2\t+\t5\t+\t0M\nL\t3\t+\t4\t+\t0M\nL\t4\t+\t5\t+\t0M\n'
         fixture+='P\tGRCh38#0#chr21\t1+,2+,5+\t*\nP\tCHM13v2#0#chr21\t1+,2+,5+\t*\nP\tCN1v1#0#chr21\t1+,3+,4+,5+\t*\nP\t_MINIGRAPH_#0#chr21\t1+,2+,5+\t*\nW\tsample\t1\tchr21\t0\t22505\t>1>3>4>5\n'

@@ -59,9 +59,44 @@ def patch(source):
     compile(source,'cactus_graphmap_join.py','exec')
     return source
 
+def checkpoint_patch(source):
+    source = 'from cactus.refmap.join_checkpoint import JoinStages\nimport xml.etree.ElementTree as join_ET\n' + source
+    anchor = "    clipped_path = vg_path + '.clip'\n"
+    # clip_vg and vg_clip_vg each have this anchor; their input IDs distinguish them.
+    if source.count(anchor) != 2:
+        raise RuntimeError('Expected exactly two clipping functions')
+    setup = ("    stages = JoinStages(cactus_call, work_dir, dict(input_id=str(vg_id),\n"
+             "        phase=JOIN_PHASE, reference=options.reference, clip=options.clip, filter=options.filter,\n"
+             "        cores=job.cores, config=join_ET.tostring(config.xmlRoot, encoding='unicode')))\n")
+    start = source.index('def vg_clip_vg(')
+    before, after = source[:start], source[start:]
+    before = replace_once(before, anchor, anchor + setup.replace('JOIN_PHASE', 'phase'))
+    after = replace_once(after, anchor, anchor + setup.replace('JOIN_PHASE', "'filter'"))
+    source = before + after
+    for expression in (
+            "cactus_call(parameters=['vg', 'convert', '-f', vg_path], outfile=gfa_in_path, job_memory=job.memory)",
+            "cactus_call(parameters=export_cmd, outfile=gfa_in_path, job_memory=job.memory)"):
+        if expression in source:
+            source = replace_once(source, expression, expression.replace('cactus_call(', "stages.run('01-export', ").replace('parameters=', 'artifact=gfa_in_path, parameters=', 1))
+    source = replace_once(source,
+        'cactus_call(parameters=fix_cmd, job_memory=job.memory)',
+        "stages.run('02-gfaffix', fix_cmd, gfa_out_path, job_memory=job.memory)")
+    source = replace_once(source,
+        'cactus_call(parameters=conv_cmd, outfile=normalized_path)',
+        "stages.pipeline('03-unchop', conv_cmd, normalized_path)")
+    source = replace_once(source,
+        'clip_stderr = cactus_call(parameters=cmd, outfile=clipped_path, job_memory=job.memory,',
+        "clip_stderr = stages.pipeline('04-clip', parameters=cmd, outfile=clipped_path, job_memory=job.memory,")
+    source = replace_once(source,
+        'cactus_call(parameters=clip_cmd, outfile=clipped_path, job_memory=job.memory)',
+        "stages.pipeline('05-filter', parameters=clip_cmd, outfile=clipped_path, job_memory=job.memory)")
+    compile(source, 'cactus_graphmap_join.py', 'exec')
+    return source
+
 def main():
     p=argparse.ArgumentParser()
     p.add_argument('directory',type=Path)
+    p.add_argument('--mode', choices=['control', 'candidate'], default='candidate')
     args=p.parse_args()
     from cactus.shared.version import cactus_commit
     from cactus.refmap import cactus_graphmap_join
@@ -71,7 +106,12 @@ def main():
     directory=args.directory.resolve()
     target=directory/'cactus/refmap/cactus_graphmap_join.py'
     target.parent.mkdir(parents=True,exist_ok=True)
-    target.write_text(patch(original.read_text(encoding='utf-8')),encoding='utf-8')
+    source = original.read_text(encoding='utf-8')
+    if args.mode == 'candidate':
+        source = patch(source)
+    target.write_text(checkpoint_patch(source),encoding='utf-8')
+    target.with_name('join_checkpoint.py').write_text(
+        Path(__file__).with_name('checkpoint.py').read_text(encoding='utf-8'), encoding='utf-8')
     (directory/'sitecustomize.py').write_text(
         'from pathlib import Path\nimport cactus.refmap\n'
         'cactus.refmap.__path__.insert(0, str(Path(__file__).resolve().parent / "cactus/refmap"))\n',encoding='utf-8')

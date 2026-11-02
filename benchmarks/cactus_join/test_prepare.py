@@ -6,7 +6,7 @@ import os
 from pathlib import Path, PurePosixPath
 import tempfile
 from types import SimpleNamespace as NS
-from prepare import patch
+from prepare import patch, checkpoint_patch
 from run import render
 
 def main():
@@ -20,6 +20,10 @@ def main():
     old_functions={f.name:ast.dump(f) for f in old.body if isinstance(f,(ast.FunctionDef,ast.AsyncFunctionDef))}
     new_functions={f.name:ast.dump(f) for f in new.body if isinstance(f,(ast.FunctionDef,ast.AsyncFunctionDef))}
     assert {k for k in old_functions if old_functions[k]!=new_functions[k]}=={'clip_vg','vg_clip_vg'}
+    for source in (original,changed):
+        staged=ast.parse(checkpoint_patch(source))
+        functions={f.name:ast.dump(f) for f in staged.body if isinstance(f,ast.FunctionDef)}
+        assert {k for k in old_functions if old_functions[k]!=functions[k]}=={'clip_vg','vg_clip_vg'}
     join=dict(gfaffix=True,maxNodeLength=1024,pathNormalize=True,removeStubs=True,clipNonMinigraph=True,
               clipInversionMin=100000,clipFlank=50000,clipFlankThreshold=-1.0,delEdgeFilter=10000000,
               clipContext=1000,minFilterFragment=1000)
@@ -68,6 +72,7 @@ def main():
         assert './align/${CHROM}.vg' in result and './align/${CHROM}.hal' in result
         assert '--outDir /results/'+mode+'/final' in result
         assert '--retryCount=0' in extra
+        assert 'CACTUS_JOIN_STAGE_CACHE' in extra and 'PYTHONPATH' in extra
     print('PASS source scope; exact full/clip/filter command order; fused reference/export check; fallback; original script preservation')
 
 if __name__=='__main__': main()

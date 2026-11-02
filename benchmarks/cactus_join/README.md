@@ -1,5 +1,7 @@
 # Cactus 7f34bb7：原版与一个低内存候选
 
+**r1 chr21 OOM 后请按 [r2 恢复说明](RECOVERY_R2.md) 增量升级和重跑。** r2 复用已有 vg/GFAffix，修复 clip-vg 的 jemalloc 构建，并加入逐条图交接与持久阶段缓存；下面保留 r1 的设计和验证范围供参考，旧 r1 重跑命令不再用于恢复。
+
 只运行 `control` 和 `candidate`，不再运行 V1–V7。原 `04.join.sh` 不改；每组使用独立 jobStore、workDir、final 和日志目录。保持三参考、filter=132 及原输出集合。
 
 ## 1. 下载、编译
