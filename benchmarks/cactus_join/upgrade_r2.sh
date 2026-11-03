@@ -58,4 +58,5 @@ for mode in control candidate; do
 done
 python3 "$HERE/test_checkpoint.py"
 python3 "$HERE/test_join.py" "$NEW" --sequential
+python3 "$HERE/test_deconstruct.py" "$NEW/control/bin/vg" "$NEW/candidate/bin/vg"
 printf 'PASS r2 upgrade and small graph comparisons: %s\n' "$NEW"

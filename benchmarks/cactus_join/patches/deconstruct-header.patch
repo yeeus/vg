@@ -1,0 +1,30 @@
+diff --git a/src/deconstructor.cpp b/src/deconstructor.cpp
+index fd3ffcb..3e82d3f 100644
+--- a/src/deconstructor.cpp
++++ b/src/deconstructor.cpp
+@@ -1347,9 +1347,12 @@ string Deconstructor::get_vcf_header() {
+ string Deconstructor::add_contigs_to_vcf_header(const string& vcf_header) const {
+ 
+     vector<string> header_lines = split_delims(vcf_header, "\n");
++    if (header_lines.empty()) {
++        throw runtime_error("[vg deconstruct] Cannot add contigs to an empty VCF header");
++    }
+ 
+     stringstream patched_header;
+-    for (int64_t i = 0; i < header_lines.size() - 1; ++i) {
++    for (size_t i = 0; i + 1 < header_lines.size(); ++i) {
+         patched_header << header_lines[i] << "\n";
+     }
+ 
+@@ -1521,7 +1524,10 @@ void Deconstructor::deconstruct(vector<string> ref_paths, const PathPositionHand
+     }
+ 
+     string hstr = this->get_vcf_header();
+-    assert(output_vcf.openForOutput(hstr));
++    // Initialization must also execute in builds that define NDEBUG.
++    if (!output_vcf.openForOutput(hstr)) {
++        throw runtime_error("[vg deconstruct] Failed to initialize the VCF header");
++    }
+ 
+     // Use top-down processing only when star alleles are needed (requires context passing).
+     // Otherwise use simpler flat processing which is more memory-efficient.

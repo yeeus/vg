@@ -86,4 +86,5 @@ python3 "$REPO/benchmarks/cactus_unchop/test_gfaffix.py" \
     "$PREFIX/control/bin/gfaffix" "$PREFIX/candidate/bin/gfaffix" "$PREFIX/source/gfaffix/examples"
 python3 "$HERE/test_checkpoint.py"
 python3 "$HERE/test_join.py" "$PREFIX" --sequential
+python3 "$HERE/test_deconstruct.py" "$PREFIX/control/bin/vg" "$PREFIX/candidate/bin/vg"
 printf 'Build and small differential checks passed: %s\n' "$PREFIX"
