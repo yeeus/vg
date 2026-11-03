@@ -263,4 +263,4 @@ python3 "$SRC/benchmarks/cactus_join/run.py" \
 4. 运行：`ldd` 看 `not found`/version mismatch，`vg version` 是比 `ldd` 更强的启动检查；必要时用五项私有库构建 B 的最小运行时目录。
 5. Cactus/Toil：先 `source cactus.config.sh` 后检查新 vg，再检查 Toil worker 是否继承 `LD_LIBRARY_PATH`，最后运行 VCF 小图/真实 chr21 verify。**不要因一次小图 PASS 宣称完整工作流 PASS。**
 
-相关文档：`[README.md](README.md)`、`[RECOVERY_R2.md](RECOVERY_R2.md)`、`[VCF_HEADER_FIX.md](VCF_HEADER_FIX.md)`。
+相关文档：[README.md](README.md)、[RECOVERY_R2.md](RECOVERY_R2.md)、[VCF_HEADER_FIX.md](VCF_HEADER_FIX.md)。
