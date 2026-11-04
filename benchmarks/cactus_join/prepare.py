@@ -11,6 +11,18 @@ def replace_once(source, old, new):
     return source.replace(old,new,1)
 
 def patch(source):
+    # Only the full-stage worker needs extra cores for the unchop analysis.
+    source = replace_once(source,
+        "            full_job = Job.wrapJobFn(clip_vg, options, config, vg_path, vg_id, 'full',\n",
+        "            full_job = Job.wrapJobFn(clip_vg, options, config, vg_path, vg_id, 'full',\n"
+        "                                     cores=min(options.maxCores, max(4, options.defaultCores or 1)),\n")
+    # Preserve the thread budget of the other full-stage operations.
+    source = replace_once(source,
+        "'--check_transformation', '--threads', str(job.cores)]",
+        "'--check_transformation', '--threads', str(int(options.defaultCores or 1))]")
+    source = replace_once(source,
+        "'-n', '-Q', options.reference[0], '-t', str(job.cores)]",
+        "'-n', '-Q', options.reference[0], '-t', str(int(options.defaultCores or 1))]")
     # Full GFA export now checks the same split-at-# sample criterion while
     # the graph is already loaded. Clip and non-GFAffix paths keep the old check.
     source = replace_once(source,
@@ -33,7 +45,8 @@ def patch(source):
         "        conv_cmd = [['vg', 'convert', '-g', '-p', gfa_out_path]]\n"
         "        # GFAFfix doesn't unchop, so we do that in vg after\n"
         "        conv_cmd.append(['vg', 'mod', '-u', '-'])",
-        "        conv_cmd = ['vg', 'convert', '-g', '-p', '--unchop', gfa_out_path]")
+        "        conv_cmd = ['vg', 'convert', '-g', '-p', '--unchop',\n"
+        "                    '--unchop-threads', str(min(4, int(job.cores))), gfa_out_path]")
     source = replace_once(source,
         "    clip_stderr = cactus_call(parameters=cmd, outfile=clipped_path, job_memory=job.memory,",
         "    # Fuse only the exact stages enabled by this chromosome workflow.\n"

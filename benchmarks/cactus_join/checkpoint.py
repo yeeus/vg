@@ -35,6 +35,10 @@ class JoinStages:
         logging.getLogger(__name__).info('JOIN_STAGE run %s', label)
         capture = dict(kwargs, returnStdErr=True)
         stderr = self.call(parameters=parameters, **capture) or ''
+        for line in stderr.splitlines():
+            if line.startswith(('[cactus-bench] phase=', '[cactus-bench] clip_phase=')):
+                from toil.realtimeLogger import RealtimeLogger
+                RealtimeLogger.info(f'{label} {line}')
         if not artifact.exists() or artifact.stat().st_size == 0:
             raise RuntimeError('Stage produced no nonempty output: ' + label)
         pending = data.with_name(data.name + '.pending')

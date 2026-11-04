@@ -19,16 +19,19 @@ def main():
     old,new=ast.parse(original),ast.parse(changed)
     old_functions={f.name:ast.dump(f) for f in old.body if isinstance(f,(ast.FunctionDef,ast.AsyncFunctionDef))}
     new_functions={f.name:ast.dump(f) for f in new.body if isinstance(f,(ast.FunctionDef,ast.AsyncFunctionDef))}
-    assert {k for k in old_functions if old_functions[k]!=new_functions[k]}=={'clip_vg','vg_clip_vg'}
+    assert {k for k in old_functions if old_functions[k]!=new_functions[k]}=={'clip_vg','vg_clip_vg','graphmap_join_workflow'}
     for source in (original,changed):
         staged=ast.parse(checkpoint_patch(source))
         functions={f.name:ast.dump(f) for f in staged.body if isinstance(f,ast.FunctionDef)}
-        assert {k for k in old_functions if old_functions[k]!=functions[k]}=={'clip_vg','vg_clip_vg'}
+        expected = {'clip_vg', 'vg_clip_vg'}
+        if source == changed:
+            expected.add('graphmap_join_workflow')
+        assert {k for k in old_functions if old_functions[k] != functions[k]} == expected
     join=dict(gfaffix=True,maxNodeLength=1024,pathNormalize=True,removeStubs=True,clipNonMinigraph=True,
               clipInversionMin=100000,clipFlank=50000,clipFlankThreshold=-1.0,delEdgeFilter=10000000,
               clipContext=1000,minFilterFragment=1000)
     config=NS(xmlRoot={'graphmap_join':join,'graphmap':dict(assemblyName='_MINIGRAPH_',collapse='none')})
-    options=NS(reference=['GRCh38','CHM13v2','CN1v1'],clip=10000,filter=132)
+    options=NS(reference=['GRCh38','CHM13v2','CN1v1'],clip=10000,filter=132,defaultCores=1)
     captures=[]
     def call(**kwargs):
         captures.append(kwargs['parameters'])
@@ -48,12 +51,14 @@ def main():
                            getOptionalAttrib=lambda node,name,typeFn=None,default=None:node.get(name,default))
             exec(compile(module,'real_patched_body','exec'),namespace)
             functions[name]=namespace[name]
-        job=NS(memory=100,cores=1,fileStore=NS(getLocalTempDir=lambda:temporary,readGlobalFile=lambda *a:None))
+        job=NS(memory=100,cores=4,fileStore=NS(getLocalTempDir=lambda:temporary,readGlobalFile=lambda *a:None))
         cmd=functions['clip_vg'](job,options,config,'chr21.vg',0,'full')
         assert cmd[1:]==[['vg','clip','--cactus-full','-','-P','GRCh38']],cmd
         assert ['--require-sample','GRCh38']==captures[0][-2:]
         assert not any(c[:2]==['vg','paths'] for c in captures)
-        assert any(c[:5]==['vg','convert','-g','-p','--unchop'] for c in captures)
+        assert any(c[:7] == ['vg','convert','-g','-p','--unchop','--unchop-threads','4'] for c in captures)
+        fix = next(c for c in captures if c[0] == 'gfaffix')
+        assert fix[fix.index('--threads') + 1] == '1'
         captures.clear()
         cmd=functions['clip_vg'](job,options,config,'chr21.vg',0,'clip')
         assert captures[0][:2]==['vg','paths']
@@ -62,7 +67,7 @@ def main():
         assert cmd==['vg','clip','--cactus-filter',os.path.join(temporary,'chr21.vg'),'-d','132',
                      '-P','GRCh38','-P','CHM13v2','-P','CN1v1','-m','1000'],cmd
         # A nonmatching thread/configuration keeps the upstream pipeline.
-        job.cores=2
+        options.defaultCores=2
         cmd=functions['clip_vg'](job,options,config,'chr21.vg',0,'full')
         assert len(cmd)==5 and cmd[-1]==['vg','ids','-s','-']
     script=args.original_join_script.read_text(encoding='utf-8')

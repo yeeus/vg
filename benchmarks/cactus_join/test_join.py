@@ -80,7 +80,8 @@ def main():
                 subprocess.run([str(gf),str(directory/'input.gfa'),'--output_refined',str(directory/'fixed.gfa'),
                                 '--check_transformation','--threads','1','--dont_collapse','GRCh38#[.]*'],env=env,check=True,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
                 unchop=[[vg,'convert','-g','-p',directory/'fixed.gfa'],[vg,'mod','-u','-']]
-                if mode=='candidate': unchop=[[vg,'convert','-g','-p','--unchop',directory/'fixed.gfa']]
+                if mode=='candidate':
+                    unchop=[[vg,'convert','-g','-p','--unchop','--unchop-threads','4',directory/'fixed.gfa']]
                 pipeline(unchop,directory/'unchop.vg',env)
                 full=[[clip,directory/'unchop.vg','-f','-e','GRCh38','-d','_MINIGRAPH_','-L','-F']]
                 full += ([[vg,'clip','--cactus-full','-','-P','GRCh38']] if mode=='candidate' else [

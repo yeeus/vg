@@ -1,0 +1,130 @@
+diff --git a/clip-vg.cpp b/clip-vg.cpp
+index a2dd3dc..64cad97 100644
+--- a/clip-vg.cpp
++++ b/clip-vg.cpp
+@@ -13,6 +13,9 @@
+ #include <map>
+ #include <set>
+ #include <unordered_map>
++#include <chrono>
++#include <cstdlib>
++#include <sys/resource.h>
+ #include <unordered_set>
+ #include <unistd.h>
+ #include <getopt.h>
+@@ -392,7 +395,21 @@ int main(int argc, char** argv) {
+         cerr << "[clip-vg] error: Unable to open input graph " << graph_path << endl;
+         return 1;
+     }    
++    auto clip_phase_start = chrono::steady_clock::now();
++    const bool report_phases = std::getenv("VG_BENCH_PHASES") != nullptr;
++    auto report_phase = [&](const char* phase) {
++        auto now = chrono::steady_clock::now();
++        if (report_phases) {
++            struct rusage usage{};
++            getrusage(RUSAGE_SELF, &usage);
++            cerr << "[cactus-bench] clip_phase=" << phase
++                 << " wall_s=" << chrono::duration<double>(now - clip_phase_start).count()
++                 << " peak_rss_kib=" << usage.ru_maxrss << '\n';
++        }
++        clip_phase_start = now;
++    };
+     unique_ptr<MutablePathMutableHandleGraph> graph = load_graph(graph_stream);
++    report_phase("load");
+     graph_stream.close();
+     if (progress) {
+         cerr << "[clip-vg]: Loaded graph" << endl;
+@@ -517,14 +534,18 @@ int main(int argc, char** argv) {
+              << " sequences" << endl;
+     }
+ 
++    report_phase("intervals");
+     if (!bed_intervals.empty()) {
+         chop_path_intervals(graph.get(), bed_intervals, force_clip, orphan_filter, ref_prefix, progress);
+     }
+ 
++    report_phase("chop");
+     if (!ref_prefix.empty()) {
+         forwardize_paths(graph.get(), ref_prefix, allow_ref_cycles, progress);
++        report_phase("orient_ref");
+         if (forwardize_nonref) {
+             forwardize_nonref_paths(graph.get(), ref_prefix, progress);
++            report_phase("orient_nonref");
+         }
+     }
+     
+@@ -534,6 +555,7 @@ int main(int argc, char** argv) {
+ 
+     if (!drop_prefix.empty()) {
+         drop_paths(graph.get(), drop_prefix, leave_aligned_drop_paths, progress);
++        report_phase("drop");
+     }
+ 
+     if (!out_bed_path.empty()) {
+@@ -559,6 +581,8 @@ int main(int argc, char** argv) {
+     }
+ 
+     dynamic_cast<SerializableHandleGraph*>(graph.get())->serialize(cout);
++    cout.flush();
++    report_phase("serialize");
+ 
+     return 0;
+ }
+@@ -708,9 +732,14 @@ void chop_path_intervals(MutablePathMutableHandleGraph* graph,
+     size_t chopped_bases = 0;
+     
+     // careful not to iterate and chop, as we could hit new subpaths made
+-    vector<path_handle_t> path_handles;    
++    const bool retire_early = force_clip && dynamic_cast<PackedGraph*>(graph);
++    size_t total_steps = 0;
++    vector<path_handle_t> path_handles;
+     graph->for_each_path_handle([&](path_handle_t path_handle) {
+             path_handles.push_back(path_handle);
++            if (retire_early) {
++                total_steps += graph->get_step_count(path_handle);
++            }
+         });
+ 
+     // when force_clip is true, store handles here to given them second chance at destruction
+@@ -721,6 +750,13 @@ void chop_path_intervals(MutablePathMutableHandleGraph* graph,
+     // paths to destroy (faster to do in single api call)
+     vector<path_handle_t> paths_to_destroy;
+     
++    // Force-clipping makes node removal decisions after all paths are cut.
++    // Release original paths in bounded batches to avoid retaining the whole
++    // unclipped graph's paths alongside all the replacement subpaths.
++    // Cap the number of batches too: destroy_paths scans node membership
++    // lists, and many tiny batches would repeat that work excessively.
++    const size_t retire_after_steps = max(size_t{1} << 20, total_steps / 8 + 1);
++    size_t pending_steps = 0;
+     for (auto path_handle : path_handles) {
+         string path_name = graph->get_path_name(path_handle);
+         auto it = bed_intervals.find(path_name);
+@@ -739,6 +775,14 @@ void chop_path_intervals(MutablePathMutableHandleGraph* graph,
+                 cerr << "adding path to destroy list" << graph->get_path_name(path_handle) << endl;
+ #endif
+                 paths_to_destroy.push_back(path_handle);
++                if (retire_early) {
++                    pending_steps += graph->get_step_count(path_handle);
++                    if (pending_steps >= retire_after_steps) {
++                        graph->destroy_paths(paths_to_destroy);
++                        paths_to_destroy.clear();
++                        pending_steps = 0;
++                    }
++                }
+                 for (handle_t handle : chopped_handles) {
+                     if (force_clip) {
+                         to_destroy.insert(graph->get_id(handle));
+@@ -1103,6 +1147,12 @@ void flip_node(MutablePathMutableHandleGraph* graph, nid_t node_id) {
+     if (graph->has_edge(graph->flip(handle), handle)) {
+         graph->create_edge(graph->flip(flipped_handle), flipped_handle);
+     }
++    if (auto* packed = dynamic_cast<PackedGraph*>(graph)) {
++        if (packed->move_path_steps(handle, flipped_handle)) {
++            packed->destroy_handle(handle);
++            return;
++        }
++    }
+     vector<step_handle_t> steps = graph->steps_of_handle(handle);
+     for (step_handle_t step : steps) {
+         step_handle_t next_step = graph->get_next_step(step);
