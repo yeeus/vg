@@ -64,7 +64,7 @@ GFA 排序、图内指纹和多文件流式比较沿用多线程；大图逐个�
 
 只有进程退出码 0、`verify_original/report.json` 的 `status="complete"` 且 `pass=true`，才表示本次范围内的输出全部通过既定比较。
 
-- `files`：每个实际比较文件的结果。图比较完整节点、边、路径；XG 另要求全索引字节一致。GFA 比较完整记录且保留路径内部顺序；VCF 比较全部字段、样本及相位，仅忽略 fileDate。其余索引/统计保留原有严格检查。
+- `files`：每个实际比较文件的结果。图比较完整节点、边、路径；XG 另要求全索引字节一致。GFA 比较完整记录且保留路径内部顺序；VCF 比较全部字段、样本及相位，仅忽略 fileDate 和 bcftools 命令元数据末尾的运行日期，保留命令参数和软件版本。其余索引/统计保留原有严格检查。
 - `ignored_control_outputs`：实际排除的旧版独有文件，逐项记录；这部分不属于 PASS 的验证范围。`chr21.stats/` 没有被排除，若出现文件缺失或差异，会如实报出。
 - `control_only`、`candidate_only`：原始清单差异。若 `status="inventory_mismatch"`，先检查这些字段；不要直接把未知缺失项全部忽略。
 - `input_metadata_check="unavailable_for_legacy_control"`、旧 `workflow_resources.control=null`：旧基线没有本轮 wrapper 元数据，不代表已经核实输入来源或统计出了旧作业资源。

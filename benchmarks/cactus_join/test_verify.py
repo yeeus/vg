@@ -44,6 +44,37 @@ def main():
                                    stdout=subprocess.PIPE,stderr=subprocess.PIPE)
             assert (result.returncode==0)==expected,(name,result.stdout,result.stderr)
         check('pass-reordered-gfa-and-date',True)
+        dated=vcf.replace(b'#CHROM',b'##bcftools_concatVersion=1.23+htslib-1.23\n'
+                          b'##bcftools_concatCommand=concat -O z --threads 6 0.clip.raw.vcf.gz; Date=Fri Oct 16 09:45:56 2026\n#CHROM')
+        for mode in ('control','candidate'):
+            with gzip.open(root/mode/'final/graph.vcf.gz','wb') as stream:
+                stream.write(dated if mode=='control' else dated.replace(b'Fri Oct 16 09:45:56 2026',b'Wed Nov  4 04:17:53 2026'))
+        check('pass-bcftools-command-date-only',True)
+        with gzip.open(root/'candidate/final/graph.vcf.gz','wb') as stream: stream.write(dated.replace(b'--threads 6',b'--threads 5'))
+        check('fail-bcftools-command-change',False)
+        difference=json.loads((root/'fail-bcftools-command-change/report.json').read_text(encoding='utf-8'))
+        assert any(row.get('first_difference',{}).get('header_difference') for row in difference['files'])
+        with gzip.open(root/'candidate/final/graph.vcf.gz','wb') as stream: stream.write(dated.replace(b'1.23+htslib-1.23',b'1.22+htslib-1.22'))
+        check('fail-bcftools-version-change',False)
+        recheck=Path(__file__).with_name('recheck_vcfs.py')
+        with gzip.open(root/'candidate/final/graph.vcf.gz','wb') as stream: stream.write(dated.replace(b'Fri Oct 16 09:45:56 2026',b'Wed Nov  4 04:17:53 2026'))
+        (root/'candidate/final/index.bin').write_bytes(b'different binary must remain failed')
+        check('fail-binary-with-valid-dated-vcf',False)
+        result=subprocess.run([sys.executable,str(recheck),str(root/'fail-binary-with-valid-dated-vcf/report.json'),
+                               '--threads','4','--output',str(root/'vcf-recheck.json')],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        assert result.returncode==0,(result.stdout,result.stderr)
+        checked=json.loads((root/'vcf-recheck.json').read_text(encoding='utf-8'))
+        assert checked['vcf_pass'] and checked['scope']=='VCF_only'
+        assert checked['previous_non_vcf_failures']==['index.bin']
+        with gzip.open(root/'candidate/final/graph.vcf.gz','wb') as stream: stream.write(dated.replace(b'0|1',b'1|0'))
+        result=subprocess.run([sys.executable,str(recheck),str(root/'fail-binary-with-valid-dated-vcf/report.json'),
+                               '--threads','4','--output',str(root/'vcf-recheck-phase-change.json')],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        assert result.returncode==1,(result.stdout,result.stderr)
+        changed=json.loads((root/'vcf-recheck-phase-change.json').read_text(encoding='utf-8'))
+        assert not changed['vcf_pass'] and not changed['files'][0]['first_difference']['header_difference']
+        (root/'candidate/final/index.bin').write_bytes((root/'control/final/index.bin').read_bytes())
+        for mode in ('control','candidate'):
+            with gzip.open(root/mode/'final/graph.vcf.gz','wb') as stream: stream.write(vcf)
         if shutil.which('h5cc') and shutil.which('h5diff') and shutil.which('h5repack'):
             source=root/'fixture.c'
             source.write_text('''#include <hdf5.h>

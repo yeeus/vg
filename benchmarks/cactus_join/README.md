@@ -1,5 +1,7 @@
 # Cactus 7f34bb7：原版与一个低内存候选
 
+**GFA/XG PASS、VCF 等多项 FAIL：见 [日期差异解释与 VCF 专项复查](VERIFY_DATE_DIFFERENCES.md)。** 只忽略已确认的运行日期，不跳过命令参数、变异记录或二进制失败。
+
 **将新 candidate 与历史 chr21 `final/` 比较：见 [历史结果验证](VERIFY_HISTORICAL.md)。** 新版 `verify.py --legacy-control` 接受没有 benchmark 元数据的旧 final，并明确记录允许的旧版额外文件；其余完整输出检查及多线程方式保留。
 
 **candidate 在 `vg deconstruct` / VCF header 处 SIGSEGV，且编译带 `-DNDEBUG`：见 [VCF 初始化修复和现有 jobStore 续跑](VCF_HEADER_FIX.md)。** 完整源码在 A 时只需在 A 增量编译，再把 vg 二进制传到 B；不重算已完成的 full/clip。
@@ -75,7 +77,7 @@ python3 "$SRC/benchmarks/cactus_join/verify.py" \
 | VG | 节点ID/序列、完整双向邻接、路径元数据和全部有序step | 图内节点/边分块、路径多线程；图逐个加载 |
 | XG | 上述图内容，以及整个索引字节 | 图内多线程；完整字节检查另做 |
 | GFA/GFA.gz | 全部记录和字段；仅忽略记录之间的输出顺序，保留P/W内部step顺序 | GNU sort多线程，512MiB排序缓冲，外部磁盘排序 |
-| VCF/VCF.gz | 所有头部及全部记录、样本、基因型和相位；仅忽略fileDate | 多文件并行流式比较 |
+| VCF/VCF.gz | 所有头部及全部记录、样本、基因型和相位；仅忽略fileDate与bcftools命令末尾日期，保留命令参数及版本 | 多文件并行流式比较 |
 | HAL | 全部HDF5数据集和属性，忽略物理布局/容器时间戳 | h5diff；与其他普通文件检查并发 |
 | GBZ、ODGI、haplo及其余索引/统计文件 | 全文件字节；gzip文件比较解压后全内容 | 多文件并行，每个缓冲4MiB |
 

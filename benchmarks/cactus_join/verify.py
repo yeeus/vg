@@ -15,16 +15,35 @@ from pathlib import Path
 import subprocess
 import tempfile
 
-def compare_streams(left,right,compressed=False,vcf=False):
+def compare_streams(left,right,compressed=False,vcf=False,detail=None):
     opener=gzip.open if compressed else open
     with opener(left,'rb') as a,opener(right,'rb') as b:
         if vcf:
             def lines(stream):
                 for line in stream:
-                    # Date is explicitly non-biological. All other headers,
-                    # reference definitions and full variant records stay exact.
-                    if not line.startswith(b'##fileDate='): yield line
-            return all(x==y for x,y in __import__('itertools').zip_longest(lines(a),lines(b)))
+                    if line.startswith(b'##fileDate='):
+                        continue
+                    # bcftools appends a run date to its command provenance.
+                    # Retain the entire command and the separate Version line.
+                    key=line.partition(b'=')[0]
+                    if key.startswith(b'##bcftools_') and key.endswith(b'Command') and b'; Date=' in line:
+                        line=line.rsplit(b'; Date=',1)[0]+b'\n'
+                    yield line
+            for number,(x,y) in enumerate(__import__('itertools').zip_longest(lines(a),lines(b)),1):
+                if x==y: continue
+                if detail is not None:
+                    if x is None or y is None:
+                        detail.update(compared_line=number,reason='different_line_counts')
+                    else:
+                        offset=next((i for i,(u,v) in enumerate(zip(x,y)) if u!=v),min(len(x),len(y)))
+                        start=max(0,offset-60)
+                        detail.update(compared_line=number,byte_column=offset+1,
+                                      header_difference=x.startswith(b'#') or y.startswith(b'#'),
+                                      field_number=x[:offset].count(b'\t')+1,
+                                      old_context=x[start:offset+120].decode('utf-8','replace'),
+                                      candidate_context=y[start:offset+120].decode('utf-8','replace'))
+                return False
+            return True
         while True:
             x,y=a.read(4*1024*1024),b.read(4*1024*1024)
             if x!=y: return False
@@ -87,7 +106,8 @@ def main():
             'workflow_resources':resources,'resource_scope':'latest_attempt_only; earlier attempts are not aggregated',
             'control_only':control_only,'candidate_only':candidate_only,
             'ignored_control_outputs':ignored,'allow_control_extra_patterns':args.allow_control_extra,
-            'binary_difference_policy':'FAIL; may require format-specific investigation, never silently waived'}
+            'binary_difference_policy':'FAIL; may require format-specific investigation, never silently waived',
+            'vcf_timestamp_policy':'ignore fileDate and only trailing bcftools_*Command Date; retain commands, versions and every variant field'}
     report_path=args.output/'report.json'
     report_path.write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
     if unmatched or candidate_only or not inventories[1]:
@@ -116,8 +136,11 @@ def main():
                 raise RuntimeError(f'h5diff failed for {name}: {result.stderr.decode(errors="replace")}')
             return {'file':name,'check':'all_HDF5_datasets_and_attributes','pass':result.returncode==0}
         vcf=name.endswith(('.vcf','.vcf.gz'))
-        equal=compare_streams(a,b,name.endswith('.gz'),vcf)
-        return {'file':name,'check':'vcf_all_fields' if vcf else 'complete_bytes_or_decompressed_bytes','pass':equal}
+        detail={}
+        equal=compare_streams(a,b,name.endswith('.gz'),vcf,detail)
+        record={'file':name,'check':'vcf_all_fields_except_run_dates' if vcf else 'complete_bytes_or_decompressed_bytes','pass':equal}
+        if detail: record['first_difference']=detail
+        return record
     # These tasks stream small buffers; they do NOT load graph objects.
     with ThreadPoolExecutor(max_workers=args.threads) as pool:
         records.extend(pool.map(compare_file,tasks))
