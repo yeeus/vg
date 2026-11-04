@@ -3,6 +3,7 @@
 import argparse
 import gzip
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -28,9 +29,18 @@ def main():
                 stream.write(gfa if mode=='control' else b'\n'.join(reversed(gfa.rstrip().splitlines()))+b'\n')
             with gzip.open(out/'final/graph.vcf.gz','wb') as stream:
                 stream.write(vcf if mode=='control' else vcf.replace(b'20261030',b'20261101'))
-        def check(name,expected):
-            result=subprocess.run([sys.executable,str(verify),str(root/'control'),str(root/'candidate'),
-                                   '--vg',str(args.vg.resolve()),'--threads','4','--output',str(root/name)],
+        graph_source=root/'input.gfa'
+        graph_source.write_bytes(gfa)
+        env=dict(os.environ)
+        env['LD_LIBRARY_PATH']=str(args.vg.resolve().parent.parent/'lib')+':'+env.get('LD_LIBRARY_PATH','')
+        with (root/'control/final/graph.vg').open('wb') as stream:
+            subprocess.run([str(args.vg.resolve()),'convert','-g','-p',str(graph_source)],
+                           env=env,stdout=stream,stderr=subprocess.PIPE,check=True)
+        shutil.copyfile(root/'control/final/graph.vg',root/'candidate/final/graph.vg')
+        def check(name,expected,legacy=False,extra=()):
+            result=subprocess.run([sys.executable,str(verify),str(root/'control/final' if legacy else root/'control'),str(root/'candidate'),
+                                   '--vg',str(args.vg.resolve()),'--threads','4','--output',str(root/name),
+                                   *(['--legacy-control'] if legacy else []),*extra],
                                    stdout=subprocess.PIPE,stderr=subprocess.PIPE)
             assert (result.returncode==0)==expected,(name,result.stdout,result.stderr)
         check('pass-reordered-gfa-and-date',True)
@@ -66,6 +76,35 @@ int main(int argc, char** argv) {
         check('fail-index-change',False)
         (root/'candidate/final/index.bin').unlink()
         check('fail-missing-output',False)
-    print('PASS real parallel verifier: harmless ordering/date; phase/path/index changes and missing output detection')
+        (root/'candidate/final/index.bin').write_bytes((root/'control/final/index.bin').read_bytes())
+        # A historical final directory has no wrapper metadata, and contains
+        # explicitly out-of-scope outputs. Never fabricate successful metadata.
+        (root/'control/summary.json').unlink()
+        (root/'control/inputs.log').unlink()
+        (root/'control/final/old.full.hal').write_bytes(b'out-of-scope old output')
+        with gzip.open(root/'control/final/derived.vcf.gz','wb') as stream: stream.write(vcf)
+        allowed=['--allow-control-extra','old.full.hal','--allow-control-extra','derived.*']
+        check('fail-unapproved-legacy-extras',False,legacy=True)
+        check('pass-legacy-without-wrapper-metadata',True,legacy=True,extra=allowed)
+        report=json.loads((root/'pass-legacy-without-wrapper-metadata/report.json').read_text(encoding='utf-8'))
+        assert report['workflow_resources']['control'] is None
+        assert report['input_metadata_check']=='unavailable_for_legacy_control'
+        assert report['ignored_control_outputs']==['derived.vcf.gz','old.full.hal']
+        assert any(row['check']=='strict_graph_identity' for row in report['files'])
+        (root/'control/final/required.gbz').write_bytes(b'required')
+        check('fail-unapproved-legacy-output',False,legacy=True,extra=allowed)
+        (root/'control/final/required.gbz').unlink()
+        (root/'candidate/final/new.gbz').write_bytes(b'new output has no historical counterpart')
+        check('fail-legacy-missing-baseline-counterpart',False,legacy=True,extra=allowed)
+        (root/'candidate/final/new.gbz').unlink()
+        (root/'candidate/final/index.bin').unlink()
+        check('fail-legacy-missing-candidate-output',False,legacy=True,extra=allowed)
+        (root/'candidate/final/index.bin').write_bytes((root/'control/final/index.bin').read_bytes())
+        with gzip.open(root/'candidate/final/graph.vcf.gz','wb') as stream: stream.write(vcf.replace(b'0|1',b'1|0'))
+        check('fail-legacy-shared-file-cannot-be-excluded',False,legacy=True,extra=['--allow-control-extra','*'])
+        with gzip.open(root/'candidate/final/graph.vcf.gz','wb') as stream: stream.write(vcf)
+        (root/'candidate/summary.json').write_text(json.dumps({'exit_code':1}),encoding='utf-8')
+        check('fail-legacy-candidate-not-successful',False,legacy=True,extra=allowed)
+    print('PASS real verifier: paired/legacy modes, parallel graph checks, VCF phase/path/index corruption, explicit extras and missing-output detection')
 
 if __name__=='__main__': main()

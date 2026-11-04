@@ -7,6 +7,7 @@ falls back to a weaker graph-only check. Large graphs are loaded ONE AT A TIME.
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+from fnmatch import fnmatchcase
 import gzip
 import json
 import os
@@ -46,26 +47,55 @@ def canonical_gfa(path,out,threads,tmp):
 
 def main():
     p=argparse.ArgumentParser()
-    p.add_argument('control',type=Path)
+    p.add_argument('control',type=Path,help='benchmark root, or historical final/ directory with --legacy-control')
     p.add_argument('candidate',type=Path)
     p.add_argument('--vg',required=True,type=Path,help='candidate/bin/vg, also used on control graphs')
     p.add_argument('--threads',type=int,default=8)
     p.add_argument('--output',type=Path,required=True)
     p.add_argument('--tmp',type=Path,help='large scratch disk for GFA record sorting')
+    p.add_argument('--legacy-control',action='store_true',
+                   help='control is a historical final directory without benchmark summary/inputs metadata')
+    p.add_argument('--allow-control-extra',action='append',default=[],metavar='RELATIVE_GLOB',
+                   help='allow matching historical-only files; shared files are always compared (legacy mode only)')
     args=p.parse_args()
     if args.threads<2: p.error('Use at least two verify threads')
+    if args.allow_control_extra and not args.legacy_control:
+        p.error('--allow-control-extra requires --legacy-control')
     resources={}
-    for parent in (args.control,args.candidate):
+    for label,parent in (('control',args.control),('candidate',args.candidate)):
+        if label=='control' and args.legacy_control:
+            resources[label]=None
+            continue
         summary=json.loads((parent/'summary.json').read_text(encoding='utf-8'))
         if summary['exit_code']!=0: raise RuntimeError(f'Workflow did not finish: {parent}')
-        resources['control' if parent==args.control else 'candidate']=summary
-    if (args.control/'inputs.log').read_bytes()!=(args.candidate/'inputs.log').read_bytes():
+        resources[label]=summary
+    if not args.legacy_control and (args.control/'inputs.log').read_bytes()!=(args.candidate/'inputs.log').read_bytes():
         raise RuntimeError('Different chromosome/reference/SV-GFA configuration')
-    directories=[args.control/'final',args.candidate/'final']
-    inventories=[{str(p.relative_to(d)):p for p in d.rglob('*') if p.is_file()} for d in directories]
-    if inventories[0].keys()!=inventories[1].keys() or not inventories[0]:
-        raise RuntimeError('Missing outputs or differing output inventory')
+    directories=[args.control if args.legacy_control else args.control/'final',args.candidate/'final']
+    for directory in directories:
+        if not directory.is_dir(): raise RuntimeError(f'Final output directory does not exist: {directory}')
+    inventories=[{p.relative_to(d).as_posix():p for p in d.rglob('*') if p.is_file()} for d in directories]
+    control_only=sorted(inventories[0].keys()-inventories[1].keys())
+    candidate_only=sorted(inventories[1].keys()-inventories[0].keys())
+    ignored=[name for name in control_only if any(fnmatchcase(name,pattern) for pattern in args.allow_control_extra)]
+    unmatched=[name for name in control_only if name not in ignored]
     args.output.mkdir(parents=True,exist_ok=False)
+    report={'pass':False,'status':'incomplete','threads':args.threads,'files':[],
+            'mode':'legacy_control_final' if args.legacy_control else 'paired_benchmark',
+            'input_metadata_check':'unavailable_for_legacy_control' if args.legacy_control else 'matching_inputs.log',
+            'directories':[str(directory.resolve()) for directory in directories],
+            'workflow_resources':resources,'resource_scope':'latest_attempt_only; earlier attempts are not aggregated',
+            'control_only':control_only,'candidate_only':candidate_only,
+            'ignored_control_outputs':ignored,'allow_control_extra_patterns':args.allow_control_extra,
+            'binary_difference_policy':'FAIL; may require format-specific investigation, never silently waived'}
+    report_path=args.output/'report.json'
+    report_path.write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
+    if unmatched or candidate_only or not inventories[1]:
+        report['status']='inventory_mismatch'
+        report_path.write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
+        raise RuntimeError(f'Output inventory mismatch: {len(unmatched)} unapproved control-only files, '
+                           f'{len(candidate_only)} candidate-only files; see {report_path}')
+    for name in ignored: del inventories[0][name]
     env=dict(os.environ,LC_ALL='C',OMP_NUM_THREADS=str(args.threads))
     env['LD_LIBRARY_PATH']=str(args.vg.resolve().parent.parent/'lib')+':'+env.get('LD_LIBRARY_PATH','')
     tasks=[]
@@ -110,9 +140,8 @@ def main():
         # stronger complete index-byte requirement, even after graph checks.
         if name.endswith('.xg'): equal=equal and compare_streams(inventories[0][name],inventories[1][name])
         records.append({'file':name,'check':'strict_graph_identity'+('_and_complete_index_bytes' if name.endswith('.xg') else ''),'pass':equal})
-    report={'pass':all(r['pass'] for r in records),'threads':args.threads,'files':records,'workflow_resources':resources,
-            'binary_difference_policy':'FAIL; may require format-specific investigation, never silently waived'}
-    (args.output/'report.json').write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
+    report.update({'status':'complete','files':records,'pass':all(r['pass'] for r in records)})
+    report_path.write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
     for row in records: print(('PASS' if row['pass'] else 'FAIL')+' '+row['file'])
     raise SystemExit(0 if report['pass'] else 1)
 
