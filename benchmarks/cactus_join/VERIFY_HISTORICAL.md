@@ -21,8 +21,8 @@ SRC="$HOME/softwares/vg-join-candidate-r2"
 VERIFY_REF=cactus-7f34bb7-lowmem
 curl --fail --location \
     "https://raw.githubusercontent.com/yeeus/vg/$VERIFY_REF/benchmarks/cactus_join/verify.py" \
-    -o "$SRC/benchmarks/cactus_join/verify.py.new"
-mv "$SRC/benchmarks/cactus_join/verify.py.new" "$SRC/benchmarks/cactus_join/verify.py"
+    -o "$SRC/benchmarks/cactus_join/verify.py.new" && \
+    mv "$SRC/benchmarks/cactus_join/verify.py.new" "$SRC/benchmarks/cactus_join/verify.py"
 ```
 
 ## 2. 从原 chr21 目录运行，使用 16 线程
