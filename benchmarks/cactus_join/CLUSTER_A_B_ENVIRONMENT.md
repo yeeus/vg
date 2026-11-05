@@ -264,3 +264,86 @@ python3 "$SRC/benchmarks/cactus_join/run.py" \
 5. Cactus/Toil：先 `source cactus.config.sh` 后检查新 vg，再检查 Toil worker 是否继承 `LD_LIBRARY_PATH`，最后运行 VCF 小图/真实 chr21 verify。**不要因一次小图 PASS 宣称完整工作流 PASS。**
 
 相关文档：[README.md](README.md)、[RECOVERY_R2.md](RECOVERY_R2.md)、[VCF_HEADER_FIX.md](VCF_HEADER_FIX.md)。
+
+## 7. R3（2026-11-04 至 11-05）构建与 Cluster B 部署补记
+
+本节在 2026-11-03 的 R1/R2 历史记录上追加，不覆盖前述成功记录。R3 benchmark 脚本固定在 yeeus/vg commit **44566df4f7d295fa40385227ad35cd0616e4492e**；新 control 源码为 **f2ed0bbd4f7d1e7f8c8f4df4a84018f388194d51**，并应用 deconstruct-header 修复。R3 candidate vg 沿用既有构建，主要重编 candidate libbdsg/clip-vg 并更新 Python override。**切勿把 R2 candidate 在 Cluster B 修复成功等同于 Cluster A 的 R2 candidate 也已修复。**
+
+### 7.1 Cluster A：这次实际遇到的失败及处理边界
+
+| 失败位置 / 日志特征 | 本次得到的教训 |
+| --- | --- |
+| 首次全量 control 构建：CMake 报 CMAKE_CXX_COMPILER 不是存在的可执行文件 | **不要把带空格和 -B 参数的字符串设为全局 CXX**：CMake 会把整个字符串当成编译器路径。嵌套构建保持 CC/CXX 为 GCC 12.2 的真实绝对路径；仅在明确的最终 vg 链接步骤使用带 -B 的 CXX 命令。 |
+| SSW：fatal error: zlib.h: No such file or directory | SSW 的内部 Makefile 未必继承上层 CPPFLAGS；应检查实际编译行，必要时用 CPATH 指向 bioinfo/include。 |
+| DYNAMIC：Assembler messages: no such instruction: vpopcntq | 其 Release 编译命令包含 -march=native，使 GCC 生成了汇编器不认识的 AVX-512 指令。曾针对 DYNAMIC 的 CMakeLists.txt 移除该选项，并单独检查失败目标；也可降低跨集群 CPU 指令集要求。**汇编器不识别不等于 CPU 不支持；A 机器能编译也不代表 B 机器能运行。** |
+| vcflib/WFA2-lib：Could NOT find OpenMP_C，缺 OpenMP_pthread_LIBRARY、OpenMP::OpenMP_C | 属于 CMake 的 OpenMP 依赖检测失败，不是 vcflib 算法错误。GCC 的 -print-file-name=libpthread.a 在 A 只返回裸文件名 libpthread.a，**不能把裸文件名当成已找到的绝对路径**。需检查真实存在的 pthread 库并验证 CMake 配置；用户随后确认 vcflib 已编译通过，但本记录没有最终所用 pthread 路径的独立日志，不能将某个路径标为通用答案。 |
+| vcflib 通过后最终 vg 链接失败：cannot find -llzma、-lprotobuf、-labsl_*、-lpthread、-ljansson | 这是原链接规则中 -Bstatic 与环境中动态库之间的冲突，以及手动覆盖链接变量时遗漏依赖。**不要因为依赖目标已构建成功就把最终链接参数简化。** |
+| vg 链接成功但启动失败：GLIBCXX_3.4.31 / GLIBCXX_3.4.32 not found | A 的 Boost program_options 1.90.0 需要较新的 libstdc++ 符号，而运行时先加载了 GCC 12.2 自带的旧 libstdc++。用 control 私有 runtime-lib 优先加载已核验的 bioinfo/lib/libstdc++.so.6；不必重新编译 vg。 |
+| control 的 vg version 成功，但 Python VCF 测试仍失败 | 命令前缀 LD_LIBRARY_PATH=... 只作用于**该命令**；随后单独运行的 Python 子进程不会自动继承。运行 test_deconstruct.py 前需 export LD_LIBRARY_PATH，或将环境显式附加在 python3 命令前。 |
+| upgrade_r3.sh 运行后，candidate 的 vg deconstruct 退出 139 | 从 Cluster A 的 R2 前缀复制进 R3 的 candidate vg 仍有旧 VCF-header 初始化缺陷。升级脚本已构建 libbdsg/clip-vg、生成 override，却在 VCF 回归检查时停止。**不要因部分工具已生成就宣布 R3 升级成功。** |
+
+这次成功的 control 最终重链接命令形式如下（**仅用于依赖已完成编译之后的 bin/vg 链接**；不能把带 -B 的 CXX 传递给依赖的 CMake 构建）：
+
+~~~bash
+SOFT=/share/home/zhanglab/user/chenquanyu/softwares
+BASE="$SOFT/vg-control-f2ed0bbd4-source"
+FIXED="$SOFT/vg-control-f2ed0bbd4-fixed"
+BIO="$HOME/mambaforge/envs/bioinfo"
+LINK_DIR="$SOFT/vg-vcf-linker-bin"
+CXX=/share/software/gcc/12.2/bin/g++
+export PKG_CONFIG_PATH="$BIO/lib/pkgconfig:$BIO/share/pkgconfig"
+PROTO_LIBS=$(pkg-config --libs --static protobuf jansson) || exit 1
+
+make -C "$BASE" -j 8 CXX="$CXX -B$LINK_DIR/" LDFLAGS="-L$BIO/lib" LD_STATIC_LIB_FLAGS="-lvgio -lhts -ldeflate -lz -lbz2 -Wl,-Bdynamic -llzma $PROTO_LIBS" bin/vg > "$FIXED/build.relink.log" 2>&1
+rc=$?
+echo "LINK_EXIT_CODE=$rc"
+~~~
+
+**已观察到** LINK_EXIT_CODE=0；单独用私有 runtime-lib 启动 control vg 成功；在将 LD_LIBRARY_PATH 传给 Python 后，control-only test_deconstruct.py 也返回 CONTROL_TEST_EXIT_CODE=0，并输出标准/gref VCF PASS。系统 Jansson 的 “no version information available” 此时仍有警告，**不是这一轮的致命错误**。成功链接、成功启动、VCF 功能测试是三个不同的验证层次。
+
+当升级已经创建 R3 输出目录时，不要简单重跑要求“目标不存在”的升级脚本，也不要习惯性 rm -rf 完整 R3（会丢失已构建组件和失败现场）。本次 upgrade_r3.sh 失败后应保留目录，先验证旧修复版 candidate，再备份和替换 **R3/candidate/bin/vg**，随后分别重跑真正的 control/candidate test_deconstruct.py 和 test_join.py --sequential。确保两项均退出 0，且检查其 PASS 日志；相同 vg 路径传两次只能证明该单个二进制可用，**不是差分测试**。再次从 Cluster A 的 R2 生成 R3 时，需要先同步 A 的 candidate 修复，避免重新引入 SIGSEGV。构建溯源还应记录对 DYNAMIC 编译选项及 vcflib 配置所做的本地更改；source.commit 的一行不涵盖这些额外改动。
+
+### 7.2 Cluster A → B：部署内容与动态库
+
+按独立 R3 前缀传输，**不要覆盖 R2 或旧 jobStore**。交付物至少包括：R3/control 和 R3/candidate 各自的 bin、lib、override；R3/source.commit；以及 R3 benchmarks/cactus_join 和 benchmarks/cactus_unchop（后者含 monitor.py）。不需要携带完整 R3 构建源码和中间对象。对 tar 包及跨机传输使用 SHA-256 核对。
+
+新 control 在 A 依赖 Boost program_options **1.90.0** 和能够提供 **GLIBCXX_3.4.32** 的 libstdc++.so.6；应将经过核对的**实际库文件**随 control 私有 lib 一起交付，避免把指向 A 目录的绝对路径软链接传给 B。B 原有的 candidate/R2 runtime-lib 使用 Boost **1.82.0**，不能将不同 Boost SONAME 冒名软链接。各工具需优先加载各自前缀的 lib，再按实际 ldd 结果处理其余依赖。
+
+B 的 Cactus 激活脚本会重设 LD_LIBRARY_PATH；所以应在 **source ./cactus.config.sh** 激活 Cactus 之后追加项目专用 runtime-lib 路径，并确认 Toil worker 继承。不要修改系统库或全局 Cactus 激活脚本。
+
+### 7.3 Cluster B：不要以 clip-vg -h 的退出码判断构建失败
+
+2026-11-05 在 B 的实际日志中，Cactus 自检全部通过，R3 **control vg version** 正常打印 f2ed0bbd4；紧接着 clip-vg -h 显示 usage，整个包含 set -e 的子 Shell 就在进入 candidate 之前退出。**最可能原因**是 clip-vg 将帮助信息写到 stderr 且以非零状态退出；原日志未直接打印该命令的退出码，因此不可把这一推断写成已测得的具体返回值。重定向 > /dev/null 只隐藏 stdout，不隐藏 stderr。打印帮助信息本身也不等价于功能测试通过。
+
+在 B 原 chr21 工作目录执行以下更稳妥的启动检查（需已正确设置 SOFT、PREFIX）：
+
+~~~bash
+(
+    set -e
+    source ./cactus.config.sh
+    for mode in control candidate; do
+        LIBS="$PREFIX/$mode/lib:$LD_LIBRARY_PATH"
+        for tool in vg clip-vg; do
+            LD_LIBRARY_PATH="$LIBS" ldd "$PREFIX/$mode/bin/$tool" > "$SOFT/r3.$mode.$tool.ldd.log" 2>&1
+            if grep -E 'not found|version .*not found' "$SOFT/r3.$mode.$tool.ldd.log"; then
+                echo "FAIL: $mode/$tool dependencies"
+                exit 1
+            fi
+        done
+        LD_LIBRARY_PATH="$LIBS" "$PREFIX/$mode/bin/vg" version
+        if LD_LIBRARY_PATH="$LIBS" "$PREFIX/$mode/bin/clip-vg" -h > "$SOFT/r3.$mode.clip_help.log" 2>&1; then
+            :
+        else
+            grep -Fq 'Chop out path intervals from a vg graph' "$SOFT/r3.$mode.clip_help.log" || {
+                cat "$SOFT/r3.$mode.clip_help.log"
+                exit 1
+            }
+        fi
+        echo "PASS: $mode startup checks"
+    done
+)
+~~~
+
+以上检查仅排除显著的动态库问题并确认能打印版本/帮助；**必须**再运行两套不同 vg 的 test_deconstruct.py，以及真实调用 clip-vg、GFAffix 的 test_join.py --sequential，且均要求退出码为 0。只有完成这些检查才启动独立的 R3 chr21 control/candidate benchmark（均使用原始 04.join.nohal.sh、相同资源和新 jobStore），最后执行 verify.py 并检查报告中的 status=complete、pass=true。
+
+**截至本次已提供的 B 日志**：只确认 control vg 能启动及 clip-vg 帮助内容已显示；candidate 的对应启动检查、B 上的两项小图测试、完整 chr21 及最终 verify **仍无通过证据**。后续取得日志后再更新状态，不从升级完成或启动自检推断完整 benchmark 成功。
