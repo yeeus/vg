@@ -6,7 +6,6 @@ import json
 import os
 from pathlib import Path
 import pickle
-import subprocess
 import sys
 import time
 
@@ -71,9 +70,8 @@ def main():
         raise ValueError('Allocate at least 56 CPUs; r4 keeps the workflow budget at 56')
     if memory >= int(os.environ['SLURM_MEM_PER_NODE']) * 2**20:
         raise ValueError('The Toil budget must leave memory outside the workflow for the allocation')
-    actual = subprocess.check_output(['git', '-C', str(args.src), 'rev-parse', 'HEAD'], text=True).strip()
-    if actual != FROZEN or (args.prefix / 'source.commit').read_text(encoding='utf-8').strip() != FROZEN:
-        raise ValueError('Use the frozen r4 source and build: ' + FROZEN)
+    if (args.prefix / 'source.commit').read_text(encoding='utf-8').strip() != FROZEN:
+        raise ValueError('Use the frozen r4 build: ' + FROZEN)
     if args.action == 'restart':
         previous = json.loads((args.out / 'run.json').read_text(encoding='utf-8'))
         expected = dict(mode='candidate', cwd=str(Path.cwd()), script=str(args.script),

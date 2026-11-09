@@ -21,7 +21,7 @@ cd /public/home/u12518101/project/APGp2/00.data/00.assembly/06.graph/chr2
 bash /public/home/u12518101/softwares/cactus-r4-run/start.sh
 ```
 
-每条染色体各运行一次，无须修改脚本中的染色体名称。源码/安装的 `source.commit` 必须对应冻结版本；运行器会核对。已有 `join_r4/` 时首次脚本会停止，不覆盖结果。
+每条染色体各运行一次，无须修改脚本中的染色体名称。安装目录的 `source.commit` 必须对应冻结版本；运行器会核对。源码目录只需保留之前传入 B 的冻结版 benchmark 脚本，不要求 B 上存在完整 Git 仓库。已有 `join_r4/` 时首次脚本会停止，不覆盖结果。
 
 外层 500G，Toil 内部预算为 **480 GiB**，留出至少约 20 GiB 余量。`--defaultCores 1` 保留经过验证的 Full 融合路径；`--maxCores 56 --indexCores 56` 保留索引可用线程。r4 的 unchop 仍为最多 4 线程。
 
