@@ -12,7 +12,7 @@ import time
 from toil.common import Toil
 from toil.job import Job
 from toil.leader import FailedJobsException
-from launch import promote_pending, resource_render
+from launch import promote_pending, resource_render, resources
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from checkpoint import JoinStages
@@ -90,6 +90,14 @@ def main():
         else:
             raise AssertionError('The first workflow must fail')
         store = Toil.resumeJobStore(str(root / 'js.join'))
+        settings = resources(None, None, None, 8, 2000 * 1024, store.config)
+        assert settings[1:] == (1900 * 2**30, 4, 1)
+        try:
+            resources(None, 8, None, 8, 2000 * 1024, store.config)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('Restart must not silently change saved thread counts')
         pending = [j for j in store.jobs() if j.has_body()]
         original_bodies = {str(j.jobStoreID): j.get_body() for j in pending}
         promote_pending(root / 'js.join', 512 * 2**20, root)
@@ -117,12 +125,19 @@ def main():
     with tempfile.TemporaryDirectory(prefix='r4-render-') as directory:
         root = Path(directory)
         os.environ['SLURM_CPUS_PER_TASK'] = '56'
-        a, flags = resource_render(frozen.render, '480Gi')(original, root, 'candidate', root / 'out', 56)
-        b, resumed = resource_render(frozen.render, '1900Gi')(original, root, 'candidate', root / 'out', 56)
+        a, flags = resource_render(frozen.render, '480Gi', 56, 1)(original, root, 'candidate', root / 'out', 56)
+        b, resumed = resource_render(frozen.render, '1900Gi', 56, 1)(original, root, 'candidate', root / 'out', 56)
         assert a == b and 'export OMP_NUM_THREADS=56' in a
         assert flags[-4:] == ['--maxJobs', '1', '--clean', 'onSuccess']
         assert resumed[resumed.index('--maxMemory') + 1] == '1900Gi'
         assert original.endswith('"$@"\n')
+        source, custom = resource_render(frozen.render, '1900Gi', 32, 2)(original, root, 'candidate', root / 'out', 56)
+        assert 'export OMP_NUM_THREADS=32' in source
+        assert custom[custom.index('--maxCores') + 1] == '32'
+        assert custom[custom.index('--indexCores') + 1] == '32'
+        assert custom[custom.index('--maxJobs') + 1] == '2'
+        assert resources(None, None, None, 56, 500 * 1024)[1:] == (475 * 2**30, 56, 1)
+        assert resources('1900Gi', 56, 2, 56, 2048 * 1024)[1:] == (1900 * 2**30, 56, 2)
         print('PASS frozen run.py rendering: only resource flags differ; original script preserved')
 
 
