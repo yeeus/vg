@@ -73,6 +73,9 @@ def patch(source):
     return source
 
 def checkpoint_patch(source):
+    # XG must honor the index budget even when it is below four cores.
+    source = replace_once(source, 'cores=max(options.indexCores, 4),',
+                          'cores=options.indexCores,  # Respect single-core index budgets.')
     source = 'from cactus.refmap.join_checkpoint import JoinStages\nimport xml.etree.ElementTree as join_ET\n' + source
     anchor = "    clipped_path = vg_path + '.clip'\n"
     # clip_vg and vg_clip_vg each have this anchor; their input IDs distinguish them.

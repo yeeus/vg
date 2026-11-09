@@ -1,5 +1,7 @@
 # Cactus 7f34bb7：原版与一个低内存候选
 
+**单核测试在 make_xg 报“requesting 4.0 cores”时，见 [单核修复和已有 jobStore 续跑](SINGLE_CORE_XG_FIX.md)。**
+
 **下一轮 control 与 candidate 的构建、运行和验证见 [r3 基准测试](BENCHMARK_R3.md)。**
 
 **GFA/XG PASS、VCF 等多项 FAIL：见 [日期差异解释与 VCF 专项复查](VERIFY_DATE_DIFFERENCES.md)。** 只忽略已确认的运行日期，不跳过命令参数、变异记录或二进制失败。

@@ -23,9 +23,8 @@ def main():
     for source in (original,changed):
         staged=ast.parse(checkpoint_patch(source))
         functions={f.name:ast.dump(f) for f in staged.body if isinstance(f,ast.FunctionDef)}
-        expected = {'clip_vg', 'vg_clip_vg'}
-        if source == changed:
-            expected.add('graphmap_join_workflow')
+        expected = {'clip_vg', 'vg_clip_vg', 'graphmap_join_workflow'}
+        assert 'cores=max(options.indexCores, 4)' not in checkpoint_patch(source)
         assert {k for k in old_functions if old_functions[k] != functions[k]} == expected
     join=dict(gfaffix=True,maxNodeLength=1024,pathNormalize=True,removeStubs=True,clipNonMinigraph=True,
               clipInversionMin=100000,clipFlank=50000,clipFlankThreshold=-1.0,delEdgeFilter=10000000,
