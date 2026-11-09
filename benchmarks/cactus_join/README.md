@@ -1,5 +1,7 @@
 # Cactus 7f34bb7：原版与一个低内存候选
 
+**完整输出使用[统一格式验证器](VERIFY_ALL_FORMATS.md)。最新版 verify.py 已合并 GBZ、ODGI 和 TBI 的复查。**
+
 **单核测试在 make_xg 报“requesting 4.0 cores”时，见 [单核修复和已有 jobStore 续跑](SINGLE_CORE_XG_FIX.md)。**
 
 **下一轮 control 与 candidate 的构建、运行和验证见 [r3 基准测试](BENCHMARK_R3.md)。**
