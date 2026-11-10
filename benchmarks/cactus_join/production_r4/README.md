@@ -2,6 +2,8 @@
 
 计算版本固定为 `9952f0fe7cc270d67d28d896096311499d9095f1`。只调整启动参数，不修改已通过 chr21 验证的工具或私有 Cactus 模块，不需要重新编译。
 
+原版 chr2 `js.join` 从 A 搬到 B 的特殊续跑，使用 [迁移入口](MIGRATE_JOIN.md)，不使用下面针对 `join_r4/js.join` 的普通续跑入口。
+
 将 `start.sh`、`restart.sh`、`launch.py` 一起放到 `/public/home/u12518101/softwares/cactus-r4-run/`。每条染色体仍使用自己的 `cactus.config.sh`、原 `04.join.sh` 和输入文件。在对应染色体目录内执行，确认 `CHROM` 正确。安装目录的 `source.commit` 必须是冻结版本；源码目录可沿用此前传入 B 的 benchmark 脚本，不需要完整 Git 仓库。
 
 ## 首次运行
