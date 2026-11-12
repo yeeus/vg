@@ -8,11 +8,13 @@ import subprocess
 import sys
 import tempfile
 import time
+import runpy
+from argparse import Namespace
 
 from toil.common import Toil
 from toil.job import Job
 from toil.leader import FailedJobsException
-from launch import promote_pending, resource_render, resources
+from launch import parse_allocation, promote_pending, resource_render, resources
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from checkpoint import JoinStages
@@ -25,6 +27,7 @@ def ancestor(job, root):
 
 
 def probe(job, root, index):
+    assert job.cores == 4 and job.memory == 512 * 2**20
     guard = Path(root) / 'active'
     descriptor = os.open(guard, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     try:
@@ -35,7 +38,13 @@ def probe(job, root, index):
         guard.unlink()
 
 
-def fail_then_resume(job, root, promised):
+def deconstruct(job, root, options):
+    assert job.cores == options.indexCores == 4
+    assert job.memory == options.indexMemory == 512 * 2**20
+    (Path(root) / 'index.done').write_text('done')
+
+
+def fail_then_resume(job, root, promised, options, index_mem):
     assert promised == 'promised-input'
     root = Path(root)
     work = Path(job.fileStore.getLocalTempDir())
@@ -56,10 +65,11 @@ def fail_then_resume(job, root, promised):
     assert job.memory == 512 * 2**20, job.memory
     assert job.cores == 2, job.cores
     (root / 'resumed.memory').write_text(str(job.memory))
-    # A future child can retain an explicit old memory argument. maxJobs=1
-    # still prevents concurrent large commands; the two probes must not overlap.
+    assert options.defaultCores == 1 and options.maxCores == options.indexCores == 4
+    assert index_mem == options.maxMemory == options.indexMemory == 512 * 2**20
+    # Newly generated jobs must use the new resources too, with maxJobs=1.
     for index in range(2):
-        job.addChildJobFn(probe, str(root), index, cores=1, memory='32Mi', disk='32Mi')
+        job.addChildJobFn(probe, str(root), index, cores=options.indexCores, memory=index_mem, disk='32Mi')
 
 
 def main():
@@ -69,7 +79,7 @@ def main():
         os.environ['CACTUS_JOIN_STAGE_CACHE'] = str(root / 'stage_cache')
         os.environ['CACTUS_JOIN_STAGE_TAG'] = 'frozen-r4-test'
         options = Job.Runner.getDefaultOptions(str(root / 'js.join'))
-        options.maxCores = 4
+        options.maxCores = 2
         options.defaultCores = 1
         options.defaultMemory = 32 * 2**20
         options.defaultDisk = 32 * 2**20
@@ -81,7 +91,11 @@ def main():
         options.logLevel = 'ERROR'
         options.caching = False
         first = Job.wrapJobFn(ancestor, str(root))
-        first.addChildJobFn(fail_then_resume, str(root), first.rv(), cores=2, memory='64Mi', disk='32Mi')
+        saved_options = Namespace(defaultCores=1, maxCores=2, indexCores=1,
+                                  maxMemory=128 * 2**20, indexMemory=64 * 2**20)
+        first.addChildJobFn(fail_then_resume, str(root), first.rv(), saved_options, 64 * 2**20,
+                            cores=2, memory='64Mi', disk='32Mi')
+        first.addFollowOnJobFn(deconstruct, str(root), saved_options, cores=1, memory='64Mi', disk='32Mi')
         try:
             with Toil(options) as toil:
                 toil.start(first)
@@ -91,32 +105,39 @@ def main():
             raise AssertionError('The first workflow must fail')
         store = Toil.resumeJobStore(str(root / 'js.join'))
         settings = resources(None, None, None, 8, 2000 * 1024, store.config)
-        assert settings[1:] == (1900 * 2**30, 4, 1)
-        try:
-            resources(None, 8, None, 8, 2000 * 1024, store.config)
-        except ValueError:
-            pass
-        else:
-            raise AssertionError('Restart must not silently change saved thread counts')
+        assert settings[1:] == (1900 * 2**30, 2, 1)
+        assert resources(None, 4, None, 8, 2000 * 1024, store.config)[2] == 4
         pending = [j for j in store.jobs() if j.has_body()]
         original_bodies = {str(j.jobStoreID): j.get_body() for j in pending}
-        promote_pending(root / 'js.join', 512 * 2**20, root)
-        promote_pending(root / 'js.join', 512 * 2**20, root)
+        promote_pending(root / 'js.join', 512 * 2**20, root, 4, 4)
+        promote_pending(root / 'js.join', 512 * 2**20, root, 4, 4)
         store = Toil.resumeJobStore(str(root / 'js.join'))
         for j in store.jobs():
             if j.has_body():
                 assert j.memory == 512 * 2**20
                 assert j.get_body() == original_bodies[str(j.jobStoreID)]
+                if j.jobName == 'deconstruct':
+                    assert j.cores == 4
+        config_path = root / 'resource_override.json'
+        config_path.write_text(json.dumps(dict(old_root=str(root), new_root=str(root), runtime=None,
+                              path_hook=None, cores=4, index_cores=4, memory_bytes=512 * 2**20,
+                              join_module='test_restart')))
+        hook = Path(__file__).with_name('migration_hook')
+        os.environ['R4_JOIN_MIGRATION_CONFIG'] = str(config_path)
+        os.environ['PYTHONPATH'] = str(hook) + ':' + str(Path(__file__).resolve().parent)
+        runpy.run_path(str(hook / 'sitecustomize.py'))
         options.restart = True
         options.maxMemory = 512 * 2**20
+        options.maxCores = 4
         with Toil(options) as toil:
             toil.restart()
         assert (root / 'ancestor.count').read_text() == '1'
         assert (root / 'command.count').read_text() == '1'
         assert (root / 'resumed.memory').read_text() == str(512 * 2**20)
         assert all((root / f'child.{i}').exists() for i in range(2))
+        assert (root / 'index.done').exists()
         assert list((root / 'restart_resources').glob('*/*.pickle'))
-        print('PASS real Toil restart: memory raised, cores unchanged, promises preserved, ancestor/cache reused, child concurrency limited')
+        print('PASS real Toil restart: maxCores 2 -> 4, saved/future index cores 1 -> 4, memory raised; ancestor/cache reused, bodies/promises preserved')
     spec = importlib.util.spec_from_file_location('r4_run_test', Path(__file__).resolve().parents[1] / 'run.py')
     frozen = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(frozen)
@@ -138,6 +159,14 @@ def main():
         assert custom[custom.index('--maxJobs') + 1] == '2'
         assert resources(None, None, None, 56, 500 * 1024)[1:] == (475 * 2**30, 56, 1)
         assert resources('1900Gi', 56, 2, 56, 2048 * 1024)[1:] == (1900 * 2**30, 56, 2)
+        record = 'JobId=4280075 NumNodes=1 NumCPUs=96 CPUs/Task=96 TRES=cpu=96,mem=2000G,node=1,billing=96'
+        assert parse_allocation(record) == (96, 2048000)
+        assert resources('1000G', 90, 1, *parse_allocation(record))[1:] == (1000000000000, 90, 1)
+        source, flags = resource_render(frozen.render, '1000G', 90, 1, root / 'resources.json')(
+            original, root, 'candidate', root / 'out', 96)
+        assert 'export R4_JOIN_MIGRATION_CONFIG=' in source
+        assert source.index('migration_hook') < source.index('/candidate/override')
+        assert 'R4_JOIN_MIGRATION_CONFIG' in flags
         print('PASS frozen run.py rendering: only resource flags differ; original script preserved')
 
 

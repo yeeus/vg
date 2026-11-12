@@ -9,10 +9,7 @@ import subprocess
 import sys
 import uuid
 
-from launch import FROZEN, resources
-
-INDEX_JOBS = {'make_vg_indexes', 'make_xg', 'make_haplo_index', 'deconstruct',
-              'odgi_squeeze', 'snarl_stats', 'compute_gref_paths'}
+from launch import FROZEN, INDEX_JOBS, allocation, resources
 
 
 def prepare_store(jobstore, config, attempt):
@@ -102,7 +99,7 @@ def main():
         raise ValueError('Use the frozen r4 runtime: ' + FROZEN)
     memory, memory_bytes, cores, max_jobs = resources(
         args.memory, args.cores, args.max_jobs,
-        int(os.environ['SLURM_CPUS_PER_TASK']), int(os.environ['SLURM_MEM_PER_NODE']))
+        *allocation())
     from cactus.shared.common import cactus_cpu_count
     from cactus.shared.version import cactus_commit
     if cactus_commit != '7f34bb7a65af5816835ef79b7ae5e2f3c277b305':

@@ -11,7 +11,8 @@ if os.environ.get('R4_JOIN_MIGRATION_CONFIG'):
     if config.get('runtime'):
         runpy.run_path(str(Path(config['runtime']) / 'override/sitecustomize.py'))
     # Reuse the user's existing Promise relocation hook without changing it.
-    runpy.run_path(config['path_hook'])
+    if config.get('path_hook'):
+        runpy.run_path(config['path_hook'])
     from toil.job import JobFunctionWrappingJob
 
     def rehome(value):

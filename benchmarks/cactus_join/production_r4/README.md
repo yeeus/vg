@@ -4,7 +4,7 @@
 
 原版 chr2 `js.join` 从 A 搬到 B 的特殊续跑，使用 [迁移入口](MIGRATE_JOIN.md)，不使用下面针对 `join_r4/js.join` 的普通续跑入口。
 
-将 `start.sh`、`restart.sh`、`launch.py` 一起放到 `/public/home/u12518101/softwares/cactus-r4-run/`。每条染色体仍使用自己的 `cactus.config.sh`、原 `04.join.sh` 和输入文件。在对应染色体目录内执行，确认 `CHROM` 正确。安装目录的 `source.commit` 必须是冻结版本；源码目录可沿用此前传入 B 的 benchmark 脚本，不需要完整 Git 仓库。
+将本目录中的启动脚本、`launch.py` 和 `migration_hook/` 一起放到 `/public/home/u12518101/softwares/cactus-r4-run/`。每条染色体仍使用自己的 `cactus.config.sh`、原 `04.join.sh` 和输入文件。在对应染色体目录内执行，确认 `CHROM` 正确。安装目录的 `source.commit` 必须是冻结版本；源码目录可沿用此前传入 B 的 benchmark 脚本，不需要完整 Git 仓库。
 
 ## 首次运行
 
@@ -23,7 +23,7 @@ bash /public/home/u12518101/softwares/cactus-r4-run/start.sh --cores 56 --memory
 | 参数 | 用途 | 不指定时 |
 |---|---|---|
 | `--memory 1900Gi` | Toil 总内存和 indexMemory 预算 | Slurm 内存分配的 95% |
-| `--cores 56` | 首次 maxCores/indexCores 及 OMP 上限 | 首次取 Slurm CPU 数；续跑继承首次值 |
+| `--cores 56` | maxCores/indexCores 及 OMP 上限，续跑时也可调整 | 首次取 Slurm CPU 数；续跑继承上次值 |
 | `--max-jobs 1` | 同时运行的 Toil 任务数上限 | 首次为 1；续跑继承上次值 |
 
 也可以不传参数，直接运行 `bash .../start.sh`。不必先尝试 500G。软件根目录可通过 `R4_SOFT=/其他路径` 指定。
@@ -35,10 +35,12 @@ bash /public/home/u12518101/softwares/cactus-r4-run/start.sh --cores 56 --memory
 旧作业退出后，在同一个染色体目录、所需资源的新作业中执行：
 
 ```bash
-bash /public/home/u12518101/softwares/cactus-r4-run/restart.sh --memory 1900Gi
+bash /public/home/u12518101/softwares/cactus-r4-run/restart.sh --cores 90 --memory 1000G
 ```
 
-可换用其他内存值，或省略 `--memory` 使用当前分配的 95%。脚本会备份并上调尚未完成任务的内存申请，不能将预算降到已有任务申请值以下。线程配置已保存在 jobStore，续跑沿用首次值，节点可申请更多 CPU；显式传入不同 `--cores` 时会停止说明原因，避免只修改 CLI 而保存任务线程不变。
+可自行更改 `--cores` 和 `--memory`。脚本会更新尚未完成任务的资源申请，并让后续生成的索引任务使用新配置；Full/Clip 仍使用冻结版本的线程策略。省略 `--cores` 时继承上次值，省略 `--memory` 时使用当前分配的 95%。现有任务的内存申请只能上调。
+
+有 `SLURM_JOB_ID` 时以 `scontrol show job` 的实际单节点分配为准，修正继承环境变量中的过期 CPU/内存值；例如实际 `96 CPU / 2000G` 不会再被旧变量误判成 `90 CPU / 500 GiB`。不修改 Slurm 作业本身。
 
 保留整个 `join_r4/`、输入、原脚本和配置，不要移动或清空。已完成的 Toil 任务不重算；失败任务重试，并复用已成功保存的 stage_cache 子步骤。未保存完成的命令需要重算。旧日志自动归档，两个入口共用文件锁。
 
